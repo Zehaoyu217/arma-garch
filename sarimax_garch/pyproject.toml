@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sarimax-garch"
-version = "0.1.0"
+version = "0.2.0"
 description = "statsmodels-SARIMAX-style regression with ARIMA errors, with opt-in GARCH(1,1) and Student-t errors estimated jointly"
 readme = "README.md"
 requires-python = ">=3.9"

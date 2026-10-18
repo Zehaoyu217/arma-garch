@@ -1,0 +1,54 @@
+{
+  "skill_name": "sarimax-garch",
+  "inputs": "generate with: python evals/make_inputs.py <workspace>  (writes <workspace>/inputs/eval-N and truth.json); reference answers: python evals/reference.py <workspace>",
+  "evals": [
+    {
+      "id": 1,
+      "name": "macro-scenario-forecast",
+      "prompt": "I have 14 years of monthly sales in sales.csv (date, sales) plus two macro drivers in macro.csv (unemployment, gdp_growth), and our planning scenario for the next 24 months in macro_scenario.csv. Using our sarimax_garch package, build a 24-month sales forecast conditional on that scenario with 90% bands. Decide whether GARCH is worth it and whether to model sales in levels or in differences — I want the reasoning, not just a model. Save the forecast as forecast.csv (date, mean, lower, upper), your code as analysis.py, and a short memo.md with the choices and caveats.",
+      "expected_output": "A levels model with constant variance (sales are cointegrated with the macro drivers and homoskedastic in the synthetic data): ARCH-LM does not reject, the AR root is well away from 1 and the backtest favours levels. forecast.csv: 24 future months, 90% bands, conditioned on the scenario path. Memo explains the evidence and flags the short sample.",
+      "files": ["inputs/eval-1/sales.csv", "inputs/eval-1/macro.csv", "inputs/eval-1/macro_scenario.csv"],
+      "assertions": [
+        "forecast.csv has 24 rows and columns date, mean, lower, upper",
+        "forecast dates are the 24 months after the last observed month",
+        "lower < mean < upper on every row and the code requests 90% intervals",
+        "the forecast is conditioned on the scenario: macro_scenario.csv is passed as future exog",
+        "an ARCH test (ARCH-LM or equivalent) is run before deciding on GARCH",
+        "levels and differences are compared out of sample (backtest / rolling forecasts), not by AIC alone",
+        "the final model is in levels (d=0) with constant variance (no GARCH)",
+        "the memo flags the short sample (168 months) as a caveat"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "garch-t-volatility",
+      "prompt": "returns.csv has ~8 years of daily index returns in percent (date, ret). Fit an AR(1)-GARCH(1,1) with Student-t errors with sarimax_garch, give me the parameter table with robust SEs plus persistence and half-life, check the residual diagnostics, and produce a 10-day-ahead volatility forecast. Save summary.txt, vol_forecast.csv (h, sigma), your code as analysis.py and a few bullet notes in notes.md.",
+      "expected_output": "AR(1)-GARCH(1,1)-t with a constant (trend='c'); robust SEs; persistence ~0.989 and half-life ~63 days; Ljung-Box and ARCH-LM on standardized residuals; vol_forecast.csv = the GARCH conditional volatility path sigma_{T+h} (2.24 -> 2.16), not the forecast-error SD of the returns (which is ~5% higher at h = 10).",
+      "files": ["inputs/eval-2/returns.csv"],
+      "assertions": [
+        "the model includes a constant (intercept)",
+        "GARCH(1,1) with Student-t errors is fitted with sarimax_garch (alpha.L1, beta.L1, nu reported)",
+        "robust standard errors are reported",
+        "persistence (~0.989) and half-life (~63 days) are reported within 5%",
+        "vol_forecast.csv has 10 rows with h and sigma",
+        "the volatility forecast is the GARCH conditional volatility sigma_{T+h} (h=10 within 1.5% of the reference), not the forecast-error SD of returns",
+        "residual diagnostics include Ljung-Box and an ARCH-LM test on the standardized residuals"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "port-seasonal-sarimax",
+      "prompt": "team_sarimax.py is how my team fits monthly sales today (statsmodels SARIMAX with order (1,1,1), seasonal_order (1,0,0,12), trend 'c', macro as exog; data in sales_seasonal.csv and macro.csv). We want to add GARCH errors using sarimax_garch while changing as little as possible. Write port.py that fits the GARCH version and compares it against the current seasonal SARIMAX out of sample at a 12-month horizon, save the comparison to comparison.csv, and explain in notes.md what had to change and which model you'd recommend.",
+      "expected_output": "port.py runs; the GARCH model drops seasonal_order (GARCH and seasonal ARMA cannot be combined) and moves seasonality into exog (Fourier terms or month dummies), keeps trend='c' and the macro regressor; the two are compared out of sample at h = 12 (backtest: CRPS / RMSE / coverage); notes explain the change and do not rank the models by AIC across backends.",
+      "files": ["inputs/eval-3/team_sarimax.py", "inputs/eval-3/sales_seasonal.csv", "inputs/eval-3/macro.csv"],
+      "assertions": [
+        "port.py runs end to end and writes comparison.csv",
+        "the GARCH model has no seasonal_order and carries seasonality in exog (Fourier terms or month dummies)",
+        "the GARCH model keeps trend='c'",
+        "the models are compared out of sample at a 12-month horizon",
+        "notes explain that GARCH and seasonal ARMA terms cannot be combined in sarimax_garch",
+        "notes do not rank the two models by AIC / log-likelihood across the two backends (or explicitly say these are not comparable)"
+      ]
+    }
+  ]
+}

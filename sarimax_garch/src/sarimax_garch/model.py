@@ -60,9 +60,12 @@ class SARIMAXGARCH:
     endog, exog          : array-like / pandas; a pandas index is kept for resid and forecasts.
     order                : (p, d, q).
     seasonal_order       : statsmodels only (raises with GARCH; put seasonal dummies / Fourier terms in exog).
-    trend                : None (no constant -- the SARIMAX default!), "c" (constant; with d >= 1 a drift,
-                           which statsmodels calls "t"), "t" (drift, d >= 1 only).  Other trends: add the
-                           deterministic term to exog.
+    trend                : as in SARIMAX, the trend polynomial of the (differenced) error equation.
+                           None / "n": no constant -- the SARIMAX default!  "c": a constant, named
+                           "intercept" for every d; with d >= 1 it is the drift of the level.  "t" and
+                           "ct" (a time trend inside the differenced equation, SARIMAX's "drift"
+                           parameter) are statsmodels-only; with GARCH / t errors they raise -- put a
+                           time column in exog instead.
     garch                : None (off) or (1, 1) / True.
     dist                 : "normal" or "t" (Student-t errors, nu estimated; needs the joint backend).
     enforce_stationarity, enforce_invertibility : passed to statsmodels; with GARCH they only warn.
@@ -119,16 +122,18 @@ class SARIMAXGARCH:
     # --- names -------------------------------------------------------------------
     @staticmethod
     def _parse_trend(trend, d, strict):
+        """SARIMAX semantics: the trend sits in the equation of the d-th difference of the errors, so
+        "c" is a constant there (statsmodels names it "intercept" for every d) and "t" is b*t there
+        (statsmodels' "drift" -- with d = 1 a quadratic trend in the level)."""
         if trend in (None, "n"):
             return None
-        if d == 0 and trend == "c":
+        if trend == "c":
             return "intercept"
-        if d >= 1 and trend in ("c", "t"):
-            return "drift"
         if strict:
-            raise NotImplementedError(f"trend={trend!r} with d={d}: with GARCH / t errors only None, 'c' "
-                                      "(and 't' for d >= 1) are supported -- add other deterministic "
-                                      "terms as exog columns")
+            raise NotImplementedError(
+                f"trend={trend!r}: with GARCH / t errors only None or 'c' is supported (as in SARIMAX, 'c' is "
+                "the constant of the differenced equation -- with d >= 1 that is the drift of the level). "
+                "SARIMAX's 't'/'ct' time-trend terms are statsmodels-only; add a time column to exog instead")
         return trend
 
     def _build_names(self):
@@ -205,7 +210,9 @@ class SARIMAXGARCH:
 
     def fit(self, cov_type=None, fixed_params=None, start_params=None, disp=False, polish=True,
             init="backcast", **kwargs):
-        """Estimate.  statsmodels backend: returns the SARIMAX results object (kwargs go to its fit()).
+        """Estimate.  statsmodels backend: returns the SARIMAX results object (kwargs go to its fit());
+        unless you pass maxiter or method, the fit gets 1000 L-BFGS iterations and, if it still has not
+        converged, a Nelder-Mead polish (see _sm_fit) -- check res.mle_retvals["converged"].
         GARCH backend: cov_type "robust" (default; QMLE sandwich), "oim"/"approx" (inverse Hessian) or
         "opg"; fixed_params {name: value}; polish / init as in the core estimator."""
         fixed = {**self._fixed, **(fixed_params or {})}
@@ -222,10 +229,13 @@ class SARIMAXGARCH:
                 kw["cov_type"] = cov_type
             if start_params is not None:
                 kw["start_params"] = np.asarray(start_params, float)
+                if fixed:
+                    kw["includes_fixed"] = True                  # start vectors from res.params are full
+            robust = "maxiter" not in kwargs and "method" not in kwargs
             if fixed:
                 with mod.fix_params(fixed):
-                    return mod.fit(**kw)
-            return mod.fit(**kw)
+                    return self._sm_fit(mod, kw, robust, has_fixed=True)
+            return self._sm_fit(mod, kw, robust)
         if kwargs:
             raise TypeError(f"unexpected fit() options for the GARCH backend: {sorted(kwargs)}")
         p, d, q = self.order
@@ -238,6 +248,35 @@ class SARIMAXGARCH:
             warnings.warn("MA part is not invertible (enforce_invertibility is advisory with GARCH)")
         return SARIMAXGARCHResults(self, res, cov_type or "robust", fixed)
 
+    @staticmethod
+    def _sm_fit(mod, kw, robust, has_fixed=False):
+        """statsmodels' SARIMAX.fit stops after 50 L-BFGS iterations by default.  On regressions with
+        trending or badly scaled exog that is often too few, and the 'fit' it returns can sit far from
+        the MLE (in testing: phi 0.895 vs 0.733, loglik -237.9 vs -233.2) with only a ConvergenceWarning.
+        Unless the caller chose maxiter / method: allow 1000 iterations; if L-BFGS still has not
+        converged, polish with Nelder-Mead and restart L-BFGS from there, keeping the best fit.  The
+        result is always statsmodels' own results object; a fit that still has not converged warns."""
+        from statsmodels.tools.sm_exceptions import ConvergenceWarning
+        if not robust:
+            return mod.fit(**kw)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ConvergenceWarning)
+            res = mod.fit(maxiter=1000, **kw)
+            if not res.mle_retvals.get("converged", True):
+                rest = {k: v for k, v in kw.items() if k not in ("start_params", "includes_fixed")}
+                extra = {"includes_fixed": True} if has_fixed else {}     # res.params includes fixed values
+                nm = mod.fit(start_params=res.params.values, method="nm", maxiter=10_000, **extra, **rest)
+                res2 = mod.fit(start_params=nm.params.values, maxiter=1000, **extra, **rest)
+                cands = [r for r in (res2, nm, res) if np.isfinite(r.llf)]
+                best_llf = max(r.llf for r in cands)
+                near = [r for r in cands if r.llf >= best_llf - 1e-6]
+                lbfgs_ok = [r for r in near if r is not nm and r.mle_retvals.get("converged", False)]
+                res = lbfgs_ok[0] if lbfgs_ok else max(near, key=lambda r: r.llf)
+        if not res.mle_retvals.get("converged", True):
+            warnings.warn("statsmodels SARIMAX did not converge (1000 L-BFGS iterations plus a Nelder-Mead "
+                          "polish); check res.mle_retvals, and try centring / rescaling exog", ConvergenceWarning)
+        return res
+
     def backtest(self, horizon=12, start=None, step=1, alpha=0.1, n_sims=2000, seed=0, fixed_params=None):
         """Rolling-origin out-of-sample scores by horizon, with the realised exog path given.
 
@@ -246,7 +285,9 @@ class SARIMAXGARCH:
         Returns a DataFrame indexed by horizon: rmse, mae, crps (proper score of the predictive
         distribution -- Gaussian closed form for the statsmodels backend, simulated for GARCH) and
         coverage of the (1 - alpha) interval.  Compare levels (d=0) vs differences (d=1) and GARCH vs
-        not with it: AIC/BIC cannot compare models fitted to differently differenced data."""
+        not with it: AIC/BIC cannot compare models fitted to differently differenced data.
+        result.attrs["n_origins"] / ["n_not_converged"] record how many refits did not converge
+        (a warning is raised when any did)."""
         T = len(self.endog)
         p, d, q = self.order
         if start is None:
@@ -258,7 +299,7 @@ class SARIMAXGARCH:
         X_f = None if self.exog is None else pd.DataFrame(self.exog, index=self._index, columns=self.exog_names)
         z = stats.norm.ppf(1 - alpha / 2)
         err = np.empty((len(origins), horizon)); crps = np.empty_like(err); cov = np.empty_like(err)
-        prev = None
+        prev, not_converged = None, 0
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             for i, t0 in enumerate(origins):
@@ -267,6 +308,8 @@ class SARIMAXGARCH:
                                    dist=self.dist, enforce_stationarity=self.enforce_stationarity,
                                    enforce_invertibility=self.enforce_invertibility, **self._sm_kwargs)
                 res = sub.fit(disp=False, fixed_params=fixed_params, start_params=prev)
+                ok = res.converged if sub.backend == "garch" else res.mle_retvals.get("converged", True)
+                not_converged += not ok
                 prev = res.params
                 Xf = None if X_f is None else X_f.iloc[t0:t0 + horizon]
                 actual = self.endog[t0:t0 + horizon]
@@ -284,9 +327,14 @@ class SARIMAXGARCH:
                     crps[i] = _crps_normal(mean, se, actual)
                     cov[i] = np.abs(actual - mean) <= z * se
                 err[i] = mean - actual
-        return pd.DataFrame({"rmse": np.sqrt(np.mean(err ** 2, 0)), "mae": np.mean(np.abs(err), 0),
-                             "crps": crps.mean(0), f"coverage{int(round((1 - alpha) * 100))}": cov.mean(0)},
-                            index=pd.Index(np.arange(1, horizon + 1), name="h"))
+        out = pd.DataFrame({"rmse": np.sqrt(np.mean(err ** 2, 0)), "mae": np.mean(np.abs(err), 0),
+                            "crps": crps.mean(0), f"coverage{int(round((1 - alpha) * 100))}": cov.mean(0)},
+                           index=pd.Index(np.arange(1, horizon + 1), name="h"))
+        out.attrs.update(n_origins=len(origins), n_not_converged=int(not_converged))
+        if not_converged:
+            warnings.warn(f"backtest: {not_converged} of {len(origins)} refits did not converge; their forecasts "
+                          "may be off -- see the fit() notes (centre / rescale exog, or a larger step)")
+        return out
 
 
 # -----------------------------------------------------------------------------
@@ -305,7 +353,10 @@ class SARIMAXGARCHResults:
         names = model.param_names
         self.param_names = names
         self.params = pd.Series(res.params[idx], index=names, name="params")
-        C = getattr(res, self._cov_types[cov_type])[np.ix_(idx, idx)]
+        full = getattr(res, self._cov_types[cov_type])
+        if full is None:                                  # every parameter fixed: a filter, no inference
+            full = np.full((len(res.params), len(res.params)), np.nan)
+        C = full[np.ix_(idx, idx)]
         self._cov = pd.DataFrame(C, index=names, columns=names)
         self.bse = pd.Series(np.sqrt(np.diag(C)), index=names, name="bse")
         self.zvalues = self.params / self.bse
@@ -353,6 +404,9 @@ class SARIMAXGARCHResults:
     unconditional_variance = property(lambda self: self._res.uncond_var)
     stationary = property(lambda self: self._res.stationary)
     invertible = property(lambda self: self._res.invertible)
+    # statsmodels names: roots of 1 - phi_1 z - ... and 1 + theta_1 z + ...; |root| > 1 = stationary / invertible
+    arroots = property(lambda self: self._res.ar_roots)
+    maroots = property(lambda self: self._res.ma_roots)
 
     # --- inference ------------------------------------------------------------------
     def cov_params(self):
@@ -459,11 +513,12 @@ class SARIMAXGARCHResults:
     # --- forecasting ------------------------------------------------------------------
     def get_forecast(self, steps=1, exog=None, n_sims=10_000, seed=None):
         """Out-of-sample forecast.  Returns GARCHPredictionResults (predicted_mean, se_mean,
-        var_pred_mean, conf_int(), summary_frame(), sims)."""
+        var_pred_mean, conditional_variance, conditional_volatility, conf_int(), summary_frame(), sims)."""
         steps = int(steps)
         fc = _core.forecast(self._res, steps, X_future=self.model._future_exog(exog, steps), n_sims=n_sims, seed=seed)
         index = _forecast_index(self.model._index, steps)
-        return GARCHPredictionResults(fc["mean"], fc["variance"], index, self.model.endog_name, fc["sims"])
+        return GARCHPredictionResults(fc["mean"], fc["variance"], index, self.model.endog_name, fc["sims"],
+                                      cond_var=fc["variance_innovation"])
 
     def forecast(self, steps=1, exog=None):
         return self.get_forecast(steps, exog=exog, n_sims=0).predicted_mean
@@ -471,7 +526,7 @@ class SARIMAXGARCHResults:
     def get_prediction(self):
         """In-sample one-step-ahead predictions (fitted values) with se = conditional volatility."""
         mean, var = self.fittedvalues.values, self.conditional_variance.values
-        return GARCHPredictionResults(mean, var, self.model._index, self.model.endog_name, None)
+        return GARCHPredictionResults(mean, var, self.model._index, self.model.endog_name, None, cond_var=var)
 
     def simulate(self, nsimulations, repetitions=1, exog=None, seed=None):
         """Simulated future paths (DataFrame nsimulations x repetitions, forecast index)."""
@@ -484,12 +539,22 @@ class SARIMAXGARCHResults:
 
 class GARCHPredictionResults:
     """Mirror of statsmodels' PredictionResults: predicted_mean, var_pred_mean, se_mean, conf_int(),
-    summary_frame(); plus the simulated paths (sims) and quantile()."""
+    summary_frame(); plus the GARCH volatility path, the simulated paths (sims) and quantile().
 
-    def __init__(self, mean, var, index, name, sims=None):
+    var_pred_mean          Var(y_{T+h} | F_T): forecast-error variance of y -- accumulates the ARMA
+                           dynamics (and, with d > 0, the integration) over the horizon.
+    conditional_variance   E[sigma^2_{T+h} | F_T]: the GARCH variance forecast of the innovation -- what a
+                           "volatility forecast" means.  Equals var_pred_mean at h = 1.
+    conditional_volatility its square root."""
+
+    def __init__(self, mean, var, index, name, sims=None, cond_var=None):
         self.predicted_mean = pd.Series(np.asarray(mean, float), index=index, name="predicted_mean")
         self.var_pred_mean = pd.Series(np.asarray(var, float), index=index, name="var_pred_mean")
         self.se_mean = pd.Series(np.sqrt(np.asarray(var, float)), index=index, name="se_mean")
+        cv = None if cond_var is None else np.asarray(cond_var, float)
+        self.conditional_variance = None if cv is None else pd.Series(cv, index=index, name="conditional_variance")
+        self.conditional_volatility = None if cv is None else pd.Series(np.sqrt(cv), index=index,
+                                                                        name="conditional_volatility")
         self.sims = None if sims is None else np.asarray(sims)
         self._name = name
 
