@@ -197,8 +197,13 @@ object; `garch=(1, 1)` or `dist="t"` uses the joint estimator (`_core.py`, a ver
 `beta.L1`, `nu`), `summary()`, `conf_int()`, `cov_params()`, `fix_params()`, `resid`/`fittedvalues` on the
 original index, `get_forecast()` with `predicted_mean`/`se_mean`/`conf_int()`/`summary_frame()` and a
 proper date index, `test_serial_correlation()`, `test_arch()`, `plot_diagnostics()`, `bootstrap()`,
-`backtest()`. GARCH or seasonal: pick one — `seasonal_order` is accepted only with `garch=None`. 12 pytest
-tests, including parity with statsmodels when GARCH is off and agreement with SARIMAX when GARCH is fixed off.
+`backtest()`, and `get_forecast().conditional_volatility` (the GARCH σₜ₊ₕ path). GARCH or seasonal: pick
+one — `seasonal_order` is accepted only with `garch=None`. `trend` follows SARIMAX exactly: `"c"` is the
+constant of the differenced equation (named `intercept` for every d; with d ≥ 1 the drift); SARIMAX's
+`"t"`/`"ct"` time trends work only with GARCH off. With GARCH off the statsmodels fit gets 1000 L-BFGS
+iterations and a Nelder-Mead polish when needed (statsmodels' default 50 iterations silently stops early on
+trending exog), and `backtest()` reports refits that did not converge. 16 pytest tests, including parity with statsmodels when
+GARCH is off and agreement with SARIMAX (d = 0 and d = 1) when GARCH is fixed off.
 
 ## Evidence (v2.2; v2.1 gives the same numbers except where noted)
 

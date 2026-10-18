@@ -66,6 +66,14 @@ def test_forecast_api(data):
     ci = fc.conf_int(method="simulated")
     assert ci.shape == (12, 2) and list(ci.columns) == ["lower y", "upper y"]
     assert np.allclose(res.forecast(12, exog=Xf).values, fc.predicted_mean.values)
+    # volatility path: sigma^2_{T+h}; equals Var(y_{T+h}) at h=1, smaller afterwards (ARMA accumulation)
+    cv = fc.conditional_variance
+    assert cv.index.equals(Xf.index) and (cv > 0).all()
+    assert np.isclose(cv.iloc[0], fc.var_pred_mean.iloc[0]) and (fc.var_pred_mean.iloc[1:] > cv.iloc[1:]).all()
+    assert np.allclose(fc.conditional_volatility ** 2, cv)
+    s2_T1 = res.params["omega"] + res.params["alpha.L1"] * res.resid.iloc[-1] ** 2 \
+        + res.params["beta.L1"] * res.conditional_variance.iloc[-1]
+    assert np.isclose(cv.iloc[0], s2_T1)                      # the GARCH recursion one step past the sample
     assert res.simulate(6, repetitions=50, exog=Xf.iloc[:6], seed=1).shape == (6, 50)
     with pytest.raises(ValueError):
         res.get_forecast(12)
@@ -82,6 +90,8 @@ def test_garch_fixed_off_matches_statsmodels(data):
     assert np.allclose(ours.params[common].values, sm.params[common].values, atol=0.02)
     assert abs(ours.params["omega"] - sm.params["sigma2"]) < 0.05
     assert np.isnan(ours.bse["alpha.L1"]) and ours.fixed_params == {"alpha.L1": 0.0, "beta.L1": 0.0}
+    assert np.allclose(np.sort(np.abs(ours.arroots)), np.sort(np.abs(sm.arroots)), rtol=0.05)   # statsmodels names
+    assert np.allclose(np.sort(np.abs(ours.maroots)), np.sort(np.abs(sm.maroots)), rtol=0.05)
 
 
 def test_t_without_garch_uses_joint_backend(data):
@@ -110,14 +120,33 @@ def test_fix_params_context_and_start_params(data):
     assert res2.fixed_params == {} and abs(res2.params["ar.L1"] - 0.6) < 0.1
 
 
-def test_d1_levels_with_drift(data):
+def test_d1_levels_trend_c_is_sarimax_intercept(data):
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
     y, X = data
     lvl, Xl = 100 + y.cumsum(), X.cumsum()
-    res = SARIMAXGARCH(lvl, exog=Xl, order=(1, 1, 0), trend="t", garch=(1, 1)).fit()
-    assert res.params.index[0] == "drift" and res.resid.isna().sum() == 2
+    res = SARIMAXGARCH(lvl, exog=Xl, order=(1, 1, 0), trend="c", garch=(1, 1)).fit()
+    assert res.params.index[0] == "intercept" and res.resid.isna().sum() == 2
     Xf = Xl.iloc[-1].values + np.cumsum(np.full((6, 2), 0.1), axis=0)
     fc = res.get_forecast(6, exog=Xf, n_sims=0)
     assert len(fc.predicted_mean) == 6 and fc.var_pred_mean.is_monotonic_increasing
+    # same meaning as SARIMAX trend="c" with d=1: the constant of the differenced equation (the drift)
+    ours = SARIMAXGARCH(lvl, exog=Xl, order=(1, 1, 0), trend="c", garch=(1, 1)).fit(
+        fixed_params={"alpha.L1": 0.0, "beta.L1": 0.0})
+    sm = SARIMAX(lvl, exog=Xl, order=(1, 1, 0), trend="c").fit(disp=False)
+    for name in ("intercept", "sin12", "shock", "ar.L1"):
+        assert abs(ours.params[name] - sm.params[name]) < 0.03, name
+    with pytest.raises(NotImplementedError):                 # SARIMAX's "t" is a time trend inside dy
+        SARIMAXGARCH(lvl, exog=Xl, order=(1, 1, 0), trend="t", garch=(1, 1))
+
+
+def test_all_params_fixed_is_a_filter(data):
+    y, X = data
+    mod = SARIMAXGARCH(y, exog=X, order=(1, 0, 1), trend="c", garch=(1, 1))
+    res = mod.fit()
+    new = SARIMAXGARCH(y.iloc[:1000], exog=X.iloc[:1000], order=(1, 0, 1), trend="c", garch=(1, 1)).fit(
+        fixed_params=dict(res.params))
+    assert np.allclose(new.params.values, res.params.values) and new.bse.isna().all()
+    assert np.allclose(new.conditional_variance.dropna().values, res.conditional_variance.iloc[1:1000].values)
 
 
 def test_unsupported_options():
@@ -126,6 +155,8 @@ def test_unsupported_options():
         SARIMAXGARCH(y, order=(1, 0, 0), seasonal_order=(1, 0, 0, 12), garch=(1, 1))
     with pytest.raises(NotImplementedError):
         SARIMAXGARCH(y, order=(1, 0, 0), trend="ct", garch=(1, 1))
+    with pytest.raises(NotImplementedError):
+        SARIMAXGARCH(y, order=(1, 0, 0), trend="t", garch=(1, 1))
     with pytest.raises(NotImplementedError):
         SARIMAXGARCH(y, order=(1, 0, 0), garch=(2, 1))
     with pytest.raises(NotImplementedError):
@@ -153,6 +184,39 @@ def test_backtest_both_backends(data):
         bt = SARIMAXGARCH(y2, exog=X2, order=(1, 0, 1), trend="c", garch=garch).backtest(horizon=6, start=300, step=25)
         assert list(bt.columns) == ["rmse", "mae", "crps", "coverage90"] and len(bt) == 6
         assert np.isfinite(bt.values).all() and (bt["crps"] <= bt["rmse"]).all()
+
+
+def _trending_exog_case():
+    """Sales cointegrated with two I(1) macro drivers (levels ~120, ~6, ~2): statsmodels' default
+    SARIMAX fit (maxiter=50) stops early on this data."""
+    T = 168
+    idx = pd.date_range("2011-01-01", periods=T, freq="MS")
+    rng = np.random.default_rng(101)
+    X = pd.DataFrame({"unemployment": 6.0 + np.cumsum(rng.normal(0, 0.15, T + 24))[:T],
+                      "gdp_growth": 2.0 + np.cumsum(rng.normal(0, 0.20, T + 24))[:T]}, index=idx)
+    full = np.column_stack([6.0 + np.cumsum(np.random.default_rng(101).normal(0, 0.15, T + 24)),
+                            2.0 + np.cumsum(np.random.default_rng(101).normal(0, 0.20, T + 24))])
+    y, _, _ = _core.simulate(T + 24, 0.0, [0.8], [], 1.0, 0.0, 0.0, dist="normal", X=full, gamma=[-3.0, 2.0], seed=102)
+    return pd.Series(120.0 + y[:T], index=idx, name="sales"), X
+
+
+def test_statsmodels_backend_reaches_the_mle_on_trending_exog():
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
+    y, X = _trending_exog_case()
+    res = SARIMAXGARCH(y, exog=X, order=(1, 0, 0), trend="c").fit(disp=False)
+    nm = SARIMAX(y, exog=X, order=(1, 0, 0), trend="c").fit(disp=False, method="nm", maxiter=50_000)
+    plain = SARIMAX(y, exog=X, order=(1, 0, 0), trend="c").fit(disp=False)        # statsmodels' defaults
+    assert res.mle_retvals["converged"]
+    assert res.llf >= nm.llf - 0.05 and res.llf >= plain.llf - 1e-9    # flat ridge: within 0.05 loglik units
+    assert abs(res.params["ar.L1"] - nm.params["ar.L1"]) < 0.02
+    if not plain.mle_retvals["converged"]:                     # the failure this guards against
+        assert res.llf > plain.llf + 1.0
+
+
+def test_backtest_reports_convergence():
+    y, X = _trending_exog_case()
+    bt = SARIMAXGARCH(y, exog=X, order=(1, 0, 0), trend="c").backtest(horizon=12, start=96, step=12)
+    assert bt.attrs["n_origins"] == 6 and bt.attrs["n_not_converged"] == 0
 
 
 def test_core_in_sync_with_standalone_script():
