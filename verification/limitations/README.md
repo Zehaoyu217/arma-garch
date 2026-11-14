@@ -9,6 +9,8 @@ cd verification/limitations
 python3 e1_backends.py && python3 e2_bands.py && python3 e3_skew.py && python3 e4_leverage.py \
   && python3 e5_converged.py && python3 report.py          # about 4 minutes on 12 cores
 ```
+The results are identical to the last digit (all 2,267 numbers in `out/`) on Python 3.9.6 and 3.11.15, both
+with numpy 2.0.2, scipy 1.13.1, pandas 2.3.3 and statsmodels 0.14.6.
 `common.py` holds the Hansen (1994) skew-t (ppf, cdf, density; checked: mass 1, mean 0, variance 1), a
 simulator that takes any standardised shocks and an optional GJR leverage term, and two prototypes the
 package does not have: a skew-t likelihood (`fit_skewt`) and a GJR variance (`fit_gjr`), both on the
