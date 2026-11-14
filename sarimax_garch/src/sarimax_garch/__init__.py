@@ -9,9 +9,14 @@
     res.params, res.bse, res.pvalues, res.llf, res.aic, res.summary()
     fc = res.get_forecast(12, exog=X_future); fc.predicted_mean, fc.se_mean, fc.summary_frame()
     fc.conditional_volatility                                   # GARCH sigma_{T+h} path
+
+    cmp = compare(y, exog=X, order=(0, 0, 1), trend="c")        # GARCH or not?  GUIDE.md as code
+    print(cmp.summary()); cmp.recommendation
 """
 from ._core import arch_lm_test, ljung_box
+from .compare import CompareResults, compare, sign_bias_test
 from .model import GARCHPredictionResults, SARIMAXGARCH, SARIMAXGARCHResults
 
-__version__ = "0.2.0"
-__all__ = ["SARIMAXGARCH", "SARIMAXGARCHResults", "GARCHPredictionResults", "arch_lm_test", "ljung_box"]
+__version__ = "0.3.0"
+__all__ = ["SARIMAXGARCH", "SARIMAXGARCHResults", "GARCHPredictionResults", "arch_lm_test", "ljung_box",
+           "compare", "CompareResults", "sign_bias_test"]

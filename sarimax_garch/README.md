@@ -25,6 +25,16 @@ fc.predicted_mean, fc.se_mean, fc.conf_int(), fc.summary_frame()      # statsmod
 fc.conf_int(method="simulated")                                         # exact multi-step bands under GARCH / t
 ```
 
+## GARCH or not? `compare()` and the guide
+
+`compare(y, exog=X, order=(p, d, q), trend="c")` fits SARIMAX, the engine's constant-variance null and GARCH
+(normal and t) on the same data. It tests for ARCH with one likelihood per comparison (never SARIMAX's AIC
+against a GARCH fit's), runs the sign-bias and t-vs-normal intercept checks, and returns a recommendation with
+flagged limitations and fallbacks; `backtest=dict(horizon=12)` adds an out-of-sample CRPS comparison.
+[`GUIDE.md`](GUIDE.md) explains when GARCH gains an edge over plain SARIMAX (regime-correct intervals,
+volatility forecasts, more precise mean estimates, valid AR/MA SEs) and when it does not (point forecasts,
+long horizons, short samples), how MA terms work with GARCH, and what each wrong choice costs — all measured.
+
 ## Model
 
 ```
@@ -74,7 +84,7 @@ levels-vs-differences choice matters far more — compare `d=0` and `d=1` with `
 
 ```
 pip install -e .            # needs pip >= 21.3 (PEP 660); or `pip install .`
-pytest                      # 16 tests incl. parity with statsmodels, sync with the standalone engine, and the skill's code examples
+pytest                      # 20 tests incl. parity with statsmodels, sync with the standalone engine, compare(), and the code examples of the skill and GUIDE.md
 ```
 `src/sarimax_garch/_core.py` is a verbatim copy of `../fixed/joint_armax_garch.py` (v3.2), the engine validated
 1:1 against rugarch, statsmodels and arch in `../verification/`; a test keeps the two in sync.

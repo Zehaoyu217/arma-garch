@@ -24,7 +24,7 @@ the numerics.
 ```bash
 python -c "import sarimax_garch; print(sarimax_garch.__version__)"          # installed already?
 pip install -e /path/to/arma-garch/sarimax_garch                              # from a local clone
-pip install "git+https://github.com/Zehaoyu217/arma-garch.git#subdirectory=sarimax_garch"   # private repo: needs GitHub access
+pip install "git+https://github.com/Zehaoyu217/arma-garch.git#subdirectory=sarimax_garch"
 ```
 Needs Python ≥ 3.9, numpy, scipy, pandas, statsmodels (matplotlib only for `plot_diagnostics`).
 
@@ -91,6 +91,21 @@ stat, p = arch_lm_test(res0.resid.iloc[res0.loglikelihood_burn:], lags=12)   # A
   constant variance at every horizon in simulation) — skip it unless volatility is highly persistent.
 - Monthly data: a GARCH variance forecast beats the sample variance from about 12–15 years with a typical ARCH
   effect (α ≈ .10), ~20 years if weak (α ≈ .05), under 10 if strong (α ≈ .15) or highly persistent (α+β ≈ .98).
+- **`compare()` does this step in one call** and never compares across backends. It returns a recommendation
+  with limitation codes L1–L15 and fallbacks (workflow and evidence: `sarimax_garch/GUIDE.md`).
+  - It runs ARCH-LM, then decides with the LR test of GARCH vs α = β = 0 inside the engine. It uses ARCH-LM
+    instead when an MA root is near 1.
+  - It also runs a sign-bias (leverage) test and the t-vs-normal intercept check.
+  - Fitting GARCH where there is none costs little: RMSE within +4% and CRPS at most +0.3%. But α or β lands
+    on the boundary in 64–87% of such fits.
+  - Keeping SARIMAX when GARCH is present costs regime-wrong bands: 90% bands cover 0.91–0.96 in calm periods
+    and 0.81–0.86 in turbulent ones. Fit such a SARIMAX with `cov_type="robust"`, because its default `opg` SEs
+    cover the AR/MA coefficients only 0.83–0.92.
+```python
+from sarimax_garch import compare
+cmp = compare(y, exog=X, order=(1, 0, 0), trend="c")
+print(cmp.summary())                                          # cmp.recommendation, cmp.flags, cmp.tests, cmp.table
+```
 
 ### 4. Error distribution
 - `dist="normal"` (default) is the safe choice: it is a QMLE, and the default robust standard errors stay valid

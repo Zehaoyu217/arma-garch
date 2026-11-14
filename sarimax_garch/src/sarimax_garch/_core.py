@@ -62,7 +62,8 @@ start-up has decayed, and forecasts match to ~1e-15.  The start-up differs:
 rugarch keeps the first max(p,q,1) observations with h = mean(res^2), so its
 loglik differs by O(1) and its estimates by O(1/T).  rugarch's `mu` is the
 unconditional mean: const = mu * (1 - sum(phi)).
-Python's `arch` is the same estimator but has no MA terms in the mean.
+Python's `arch` is the same estimator; up to 8.x it had no MA terms in the mean, and arch 9.0
+(2026-11) adds a pure MA(q) mean (MAMean) but no joint ARMA(p,q) -- the MA fits match it (verification/limitations, E7).
 
 Exogenous X: by default (xreg="regression", since v3.0) this is regression with
 ARMA errors -- the model of statsmodels SARIMAX/ARIMA(exog=), rugarch
@@ -402,7 +403,7 @@ class JointResult:
     @property
     def fourth_moment_exists(self):
         """E[eps^4] < inf  <=>  kappa_eta*alpha^2 + 2*alpha*beta + beta^2 < 1.
-        This is the condition for asymptotic normality of the ARMA-GARCH QMLE
+        With E[eta^4] < inf this is the standard sufficient condition for asymptotic normality of the ARMA-GARCH QMLE
         (Francq & Zakoian 2004). If False, the ARMA-parameter SEs below rest on theory
         that does not apply; see Ling (2007) self-weighted QMLE."""
         a, b = self["alpha"], self["beta"]
@@ -491,7 +492,7 @@ class JointResult:
                      f"uncond.var={self.uncond_var:.4f}")
         lines.append(f"AR stationary={self.stationary}  MA invertible={self.invertible}  "
                      f"converged={self.converged}")
-        lines.append(f"E[eps^4]<inf (needed for asymptotic normality of these SEs): "
+        lines.append(f"E[eps^4]<inf (the standard sufficient condition for asymptotic normality of these SEs): "
                      f"{self.fourth_moment_exists}   kappa_eta={self.kurtosis_eta:.2f}")
         if not self.fourth_moment_exists:
             lines.append("  WARNING: fourth moment infinite -> mean-equation SEs are not backed by "

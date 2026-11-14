@@ -7,10 +7,17 @@ printed by `report.py` from `out/*.json`.
 ```bash
 cd verification/limitations
 python3 e1_backends.py && python3 e2_bands.py && python3 e3_skew.py && python3 e4_leverage.py \
-  && python3 e5_converged.py && python3 report.py          # about 4 minutes on 12 cores
+  && python3 e5_converged.py && python3 e6_sarimax_vs_garch.py && python3 report.py   # about 7 minutes on 12 cores
+python3 e7_arch_mamean.py      # needs a Python with arch >= 9.0 (not a package dependency)
 ```
-The results are identical to the last digit (all 2,267 numbers in `out/`) on Python 3.9.6 and 3.11.15, both
-with numpy 2.0.2, scipy 1.13.1, pandas 2.3.3 and statsmodels 0.14.6.
+The results of E1–E5 are identical to the last digit (all 2,267 numbers in `out/`) on Python 3.9.6 and 3.11.15,
+both with numpy 2.0.2, scipy 1.13.1, pandas 2.3.3 and statsmodels 0.14.6.
+
+**Follow-ups added the same day:**
+- E6 (SARIMAX vs SARIMAX-GARCH, both ways round) and E7 (MA-GARCH against arch 9.0).
+- `compare()` in package 0.3.0, which runs the decision workflow.
+- The user guide [`sarimax_garch/GUIDE.md`](../../sarimax_garch/GUIDE.md), with limitation codes L1–L15 and fallbacks.
+- The literature review in [`reports/`](reports/), with its notes in `research_notes/`.
 `common.py` holds the Hansen (1994) skew-t (ppf, cdf, density; checked: mass 1, mean 0, variance 1), a
 simulator that takes any standardised shocks and an optional GJR leverage term, and two prototypes the
 package does not have: a skew-t likelihood (`fit_skewt`) and a GJR variance (`fit_gjr`), both on the
@@ -93,6 +100,15 @@ The truth has no ARCH, so every "GARCH" verdict is a false positive.
 The gap is the log-density of the p unscored observations (≈ −1.5 for one N(0, σ²/(1−φ²)) value). The
 parameter estimates of the two backends agree closely; only the likelihood level differs.
 
+**The sign of the gap depends on the units of y** (`python3 e1_backends.py scale`, AR(1), 100 series per scale):
+
+| sd(y) | 11.5 | 1.15 | 0.28 | 0.115 | 0.012 |
+|---|---|---|---|---|---|
+| gap engine − statsmodels | +3.77 | +1.47 | +0.04 | −0.83 | −3.07 |
+
+At unit scale the cross-backend comparison favours GARCH. On small-scale data, such as returns in decimals, it
+is biased against GARCH. It is wrong at every scale; only the direction changes.
+
 The 5.99 cut-off is the χ²(2) convention. Under the null the LR statistic is not χ²(2): α = 0 is on the
 boundary and β is not identified there, which is why the within-engine rate stays at or below 5%. The point
 is the gap between the two columns.
@@ -132,6 +148,10 @@ horizons (80% → 0.810 and 99% → 0.983 at h = 20), because GARCH makes the mu
 | fit-t default | 0.828 · 0.787 | 0.902 · 0.871 | 0.939 · 0.916 | 0.974 · 0.963 | 1.27% / 1.29% |
 | fit-t simulated | 0.791 · 0.757 | 0.890 · 0.861 | 0.941 · 0.918 | 0.985 · 0.973 | 0.76% / 0.77% |
 | oracle simulated | 0.800 · 0.800 | 0.900 · 0.900 | 0.950 · 0.950 | 0.990 · 0.990 | 0.50% / 0.52% |
+
+The t(5) designs have α .08 and β .90, so κα² + 2αβ + β² = 1.012 > 1 with κ = 9. The observed series then
+has no finite fourth moment, which puts these designs (and E5's) outside the Francq & Zakoian (2004) conditions
+for asymptotic normality. That does not affect the band results, which are scored against simulated truth.
 
 Reading: the shape error of the default band is the same at every T, and it disappears with
 `method="simulated"`. The estimation error grows as T falls and as the horizon and the persistence grow,
@@ -211,7 +231,7 @@ w_t = (ν+1)/(ν−2+z_t²), which fall for large |z|. With a long left tail, th
 down-weighted more, so the weighted mean of ε is zero only when the fitted centre sits above the true mean.
 The Gaussian QMLE weights every standardised shock equally, so the mean of ε stays at zero.
 
-### E4 — leverage (GJR variance, normal shocks, persistence 0.97; 400 series per design)
+### E4 — leverage (GJR variance, normal shocks, persistence α + γ/2 + β = 0.97; 400 series per design)
 
 | design | estimator | c bias (bias/SD) | μ bias | φ bias/SD | g bias/SD |
 |---|---|---|---|---|---|
@@ -242,7 +262,83 @@ follows. The flag is unreliable in both directions:
   5 by more than 0.5, 3 by more than 1.0. Only 2 of the 13 were flagged.
 - The worst fit marked `converged=True` is 1.87 units below the best.
 
+### E6 — SARIMAX vs SARIMAX-GARCH, both ways round (28 designs, 300 series each)
+
+**Design:**
+- Regression y = 0.5x + u, with u AR(1) (φ .5), MA(1) (θ .5) or MA(1) with θ .9, and normal shocks.
+- GARCH: none, typical monthly (α .10, β .75) or persistent (α .08, β .90).
+- T = 120, 250, 500 and 1000.
+- Every band is scored against the true predictive distribution.
+- The full tables are printed by `report.py`; the decision workflow built on them is in `sarimax_garch/GUIDE.md`.
+
+| finding | numbers |
+|---|---|
+| GARCH where there is none costs little, but the GARCH part is empty | RMSE of φ/θ/slope within +4% (typically ≤ 2%); CRPS +0.0–0.3%; α or β on a boundary in 64–87% of fits |
+| GARCH's real edge: intervals that hold in both regimes | SARIMAX's 90% one-step band covers 0.91–0.96 in calm periods and 0.81–0.86 in turbulent ones (bottom/top third of the true σ²_{T+1}); GARCH covers 0.86–0.90 in both; average coverage is 0.88–0.90 for both |
+| CRPS barely moves | GARCH/SARIMAX 0.996–1.000 (typical) and 0.984–0.994 (persistent) at h = 1; 0.989–1.003 at h = 12 |
+| Mean estimates gain with persistent volatility | slope RMSE −3% to −17%, AR/MA coefficient −4% to −16% (persistent); slope 0 to −7% (typical) |
+| SARIMAX's default SEs fail for AR/MA under GARCH | `opg` 95% CIs cover φ/θ 0.83–0.92; `cov_params_robust` 0.89–0.94; the GARCH fit's robust SEs 0.91–0.97; slope and intercept CIs fine (0.91–0.97) for all three |
+| Detection, false positives (no GARCH; φ/θ = .5) | LR within the engine 3–4%, ARCH-LM(4) 3–7%, AIC within 7–11%, BIC 0–1%; AIC across backends 48–55% for AR(1) but only 8–10% for MA(1): the conditional likelihood drops one observation per AR lag, so E1's gap scales with p |
+| Detection, power | LR within: 0.22–0.32 (T = 120), 0.46–0.78 (250), 0.79–0.97 (500), 0.99–1.00 (1000); ARCH-LM(4) somewhat lower |
+| MA near the unit circle | at θ = .9 with no GARCH the engine's LR picks GARCH 11% (T = 1000) and AIC 21%, while ARCH-LM on SARIMAX's residuals stays at 4–6%: the conditional likelihood's start-up transient looks like a variance burst |
+
+### E7 — MA-GARCH against Python arch 9.0 (`MAMean`, released 2026-11-11)
+
+**Design:** MA(1), MA(2), MA(1) with θ = .9, and MA(1) with t shocks; T = 3000.
+
+**Result:** every parameter matches `MAMean` within **0.008 SE** (largest absolute difference 3.7e-4). The
+log-likelihoods differ by 0.003–0.012 because the two packages start the variance recursion differently.
+Under the engine's likelihood, arch's estimate is never better than the engine's.
+
+arch ≥ 9.0 has pure MA(q) means, but still no joint ARMA(p,q) and no regression-with-ARMA-errors form.
+
+## Literature: what is known, what is new
+
+The full review is [`reports/ARMA GARCH limitations literature review.md`](reports/ARMA%20GARCH%20limitations%20literature%20review.md).
+It is built from eight research notes in `research_notes/`, with every citation checked against the publisher,
+Crossref or RePEc; most results were read at abstract level.
+
+| finding | verdict | anchor in the literature |
+|---|---|---|
+| E1 | known rule; the size is package-specific | AIC and likelihoods compare only on the same observations under one definition (R `arima` help; Hyndman & Athanasopoulos, FPP3) |
+| E2 | known; the ARMA-GARCH numbers are new | standardized-t quantile arithmetic; Baillie & Bollerslev (1992); plug-in bands too narrow: Kim (2001), Pascual, Romo & Ruiz (2006) |
+| E3 | known; the magnitudes are new | Newey & Steigerwald (1997): a symmetric non-Gaussian quasi-likelihood identifies the mean only under symmetry; Bollerslev & Wooldridge (1992) |
+| E4 | extension: sign and size are new | theory allows the bias (Engle 1982, Theorem 4, needs a symmetric variance; Sin 2003); GJR (1993) showed the variance specification flips GARCH-M conclusions |
+| E5, E7 | package-specific | — |
+| E6 | known pieces; quantifying them together is new | Engle (1982); weak ARMA: Francq & Zakoian (1998), Francq, Roy & Zakoian (2005); Christoffersen (1998); Lee (1991); Demos & Sentana (1998); Ma, Nelson & Startz (2007); Hughes, King & Kwek (2004) |
+
+What the review added to the study:
+- **E1's sign:** the gap depends on the units of y (verified above).
+- **E6's ordering is predictable.** Under GARCH the outer product of the AR/MA scores exceeds the Hessian.
+  So `opg` is the most anti-conservative choice, then the Hessian, and only the sandwich is consistent. E6
+  measured exactly that order. For a regressor independent of the volatility, all three agree, which is why
+  slope coverage is fine.
+- **E4's reading:** a sandwich fixes the spread of an estimator, not its centre. That is why E4's robust
+  intercept CI covers 0.745 under a misspecified variance.
+- **Corrections, now applied:**
+  - arch 9.0 has `MAMean`.
+  - The fourth-moment condition is sufficient, not necessary.
+  - Ljung–Box degrees of freedom are an iid-ARMA convention.
+  - Only `ugarchboot` "Full" bootstraps parameter uncertainty.
+  - GJR persistence is α + γ/2 + β.
+  - The χ²(2) LR cut-off is conservative.
+
 ## Limitations, ranked by consequence
+
+The guide and `compare()` number these limitations L1–L15 in workflow order. Mapping from this section's
+numbers to the guide's codes:
+- #1 → L7
+- #2 → L8
+- #3 and #4 → L12
+- #5 → L4
+- #6 → L13
+- #7 → L10
+- #9 → L1
+- #10 → L2 and L9
+- #11 → L14
+- #13–15 → L15
+
+#8 (GARCH(1,1) only) and #12 (the results class) have no code in the guide.
 
 **Wrong answers without a warning**
 
@@ -253,7 +349,7 @@ follows. The flag is unreliable in both directions:
 | 3 | the default band is normal under t / GARCH: 80% → 0.84, 99% → 0.978 | E2 | make `method="simulated"` the default on the GARCH/t backend (keep `"normal"` for statsmodels parity on request); the exact t quantile at h = 1 | small |
 | 4 | symmetric bands under skew: lower 1% tail breached 2–3× too often | E3 | `get_forecast(..., shocks="empirical")`: resample `std_resid` (filtered historical simulation) | small |
 | 5 | toggling `garch` compares two different likelihoods: AIC picks GARCH 45–52% of the time, LR false positives 17–27%, on data with no ARCH | E1 | a GARCH-vs-not helper that fits the null on the engine (`fixed α = β = 0`), or `backend="engine"` for `garch=None`; a warning in `summary()` | small |
-| 6 | plug-in bands ignore estimation error: 90% → 0.86 at h = 20 when T = 250 and φ = 0.9 | E2 D4 | bootstrap predictive intervals (Pascual, Romo & Ruiz 2006, rugarch `ugarchboot`), reusing `bootstrap()`'s refits | medium; costs `n_boot` refits |
+| 6 | plug-in bands ignore estimation error: 90% → 0.86 at h = 20 when T = 250 and φ = 0.9 | E2 D4 | bootstrap predictive intervals (Pascual, Romo & Ruiz 2006 = rugarch `ugarchboot(method="Full")`; "Partial" and arch's bootstrap forecast ignore parameter uncertainty), reusing `bootstrap()`'s refits | medium; costs `n_boot` refits |
 | 7 | a single optimiser start: 2% of fits at T = 250 end more than 0.1 log-lik units below a better optimum, and `converged` misses them while flagging good fits | E5 | 3–5 restarts (two-step estimates plus perturbed starts), keep the best; report convergence from the final candidate (gradient norm, step) | small |
 
 **Missing features (documented, and they limit what can be modelled)**
@@ -270,12 +366,15 @@ follows. The flag is unreliable in both directions:
 
 | # | limitation | fix |
 |---|---|---|
-| 13 | `summary()` runs Ljung–Box without the p + q degrees-of-freedom adjustment | pass `model_df=p+q` to `acorr_ljungbox` |
-| 14 | ARCH-LM on standardised residuals uses χ²(lags), but GARCH estimation changes its null distribution | Li–Mak (1994) test, or the weighted Ljung–Box on z² (Fisher & Gallagher 2012, rugarch's default) |
+| 13 | `summary()` runs Ljung–Box without the p + q degrees-of-freedom adjustment | `model_df=p+q` is Box–Pierce's iid-ARMA convention; under GARCH errors neither version is χ². The corrected laws are Li–Mak (1994), Wong–Ling (2005) and Francq–Roy–Zakoian (2005). On z², count the GARCH parameters |
+| 14 | ARCH-LM on standardised residuals uses χ²(lags), but GARCH estimation changes its null distribution | the Li–Mak (1994) test. rugarch prints a weighted Ljung–Box on z and z² and a weighted Li–Mak ARCH-LM; these are different statistics, both with Fisher & Gallagher (2012) gamma approximations |
 | 15 | Jarque–Bera tests normality even when `dist="t"` (it rejects by design); nothing tests skewness, sign bias or the fitted density | skewness test, Engle–Ng sign bias, PIT/KS test against the fitted density |
 
-## What to do today, without new code
+## What to do today
 
+- **Start with `compare(y, exog=X, order=..., trend="c")`** (package 0.3.0). It runs the checks below and prints a
+  recommendation with flagged limitations and fallbacks; `sarimax_garch/GUIDE.md` is the workflow behind it.
+- **If you keep SARIMAX while GARCH may be present**, fit it with `cov_type="robust"` (E6).
 - **For the mean** (regression effects, long-run level, point forecasts), use `garch=(1, 1), dist="normal"`.
   It is consistent under skew; under leverage, cross-check the intercept against `garch=None`. Use
   `dist="t"` for the mean only when its intercept agrees with the normal fit's, within one robust SE of

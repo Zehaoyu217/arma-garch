@@ -69,5 +69,35 @@ def main():
         json.dump(res, f, indent=1)
 
 
+def scale_one(args):
+    """The backend gap llf(engine, alpha = beta = 0) - llf(SARIMAX) for the same series in different units."""
+    scale, seed = args
+    rng = np.random.default_rng(seed)
+    x = common.ar1_exog(501, 0.7, rng)
+    w, *_ = common.simulate(501, 0.2, 0.5, 1.0, 0.0, 0.0, rng.standard_normal(501 + 500), X=x[:, None], g=[0.5])
+    y, X = scale * w[1:], scale * x[1:, None]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sm = SARIMAXGARCH(y, exog=X, order=(1, 0, 0), trend="c").fit()
+        e0 = SARIMAXGARCH(y, exog=X, order=(1, 0, 0), trend="c", garch=(1, 1)).fit(
+            fixed_params={"alpha.L1": 0.0, "beta.L1": 0.0})
+    return float(e0.llf - sm.llf)
+
+
+def scale_check():
+    """The gap is the log-density of the first (unscored) observation, so its SIGN depends on the units of y:
+    about -0.5*log(2*pi*e*Var(u)), positive for Var(u) > 1/(2*pi*e) = 0.059 (sd 0.24), negative below."""
+    out = {}
+    with Pool(12) as pool:
+        for s in (10.0, 1.0, 0.24, 0.1, 0.01):
+            gaps = np.array(pool.map(scale_one, [(s, 7000 + i) for i in range(100)]))
+            out[str(s)] = dict(gap_mean=float(gaps.mean()), gap_sd=float(gaps.std()))
+            print(f"scale {s:>5}: sd(y) ~ {s * np.sqrt(1 / 0.75):.3f}   gap engine - statsmodels = {gaps.mean():+.2f} "
+                  f"(sd {gaps.std():.2f})", flush=True)
+    with open(f"{common.OUT}/e1_scale.json", "w") as f:
+        json.dump(out, f, indent=1)
+
+
 if __name__ == "__main__":
-    main()
+    import sys as _sys
+    scale_check() if "scale" in _sys.argv[1:] else main()

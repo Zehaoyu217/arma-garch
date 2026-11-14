@@ -36,6 +36,23 @@ def namespace():
             "y_new": y_all.iloc[T - 60:], "X_new": X_all.iloc[T - 60:]}
 
 
+def test_guide_python_blocks_run(namespace):
+    """GUIDE.md (the compare workflow) must run as written, in document order."""
+    blocks = python_blocks(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "GUIDE.md"))
+    assert len(blocks) >= 6
+    ns = dict(namespace)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for i, code in enumerate(blocks):
+            try:
+                exec(compile(code, f"<guide block {i}>", "exec"), ns)
+            except Exception as e:
+                pytest.fail(f"guide code block {i} failed: {type(e).__name__}: {e}\n---\n{code}")
+    assert ns["cmp"].recommendation["model"] and ns["lr"] >= 0
+    assert ns["fc"].conf_int(alpha=0.10, method="simulated").shape == (12, 2)
+    assert ns["bt_g"].shape[0] == 6
+
+
 def test_skill_python_blocks_run(namespace):
     if not os.path.exists(os.path.join(SKILL, "SKILL.md")):
         pytest.skip("skill folder not present")

@@ -7,6 +7,8 @@ rugarch, statsmodels SARIMAX and Python `arch`.
 | Path | What it is |
 |---|---|
 | `sarimax_garch/` | **The package.** `SARIMAXGARCH(endog, exog, order, trend, garch=None/(1,1), dist="normal"/"t")`: with GARCH off it *is* statsmodels SARIMAX (its own results object); with GARCH or t errors it switches to the joint estimator behind the same attribute names (`params`, `bse`, `summary()`, `get_forecast()`, …). GARCH or seasonal: pick one. See `sarimax_garch/README.md`. |
+| `sarimax_garch/GUIDE.md` | **SARIMAX or SARIMAX-GARCH?** When GARCH gains an edge (and when not), MA models with GARCH, how to test for GARCH, what goes wrong either way, and a step-by-step compare workflow with labeled limitations (L1–L15) and fallbacks. `compare()` runs it in one call. |
+| `verification/limitations/` | The methodology-limitations study (E1–E7: backends, GARCH-t bands, skewed shocks, leverage, convergence, SARIMAX vs GARCH both ways, MA-GARCH vs arch 9.0) and its literature review (`reports/`). |
 | `skills/sarimax-garch/` | **A Claude skill** for using the package. It covers setup, the two backends, and the modelling workflow: levels vs differences, GARCH or not, small samples, forecasting with a given exog path, backtesting and the gotchas. It also has an API reference, the evidence behind its advice, and evals (`evals/`). Install for Claude Code: `ln -s "$PWD/skills/sarimax-garch" ~/.claude/skills/sarimax-garch`. The package's test suite runs every code example in the skill. |
 | `fixed/joint_armax_garch.py` | The estimation engine, v3.2 (single file, numpy/scipy only). The package ships a byte-identical copy as `_core.py`; a test keeps them in sync. `v2.1_to_v3.2.diff` is the full change log against the original. |
 | `joint_armax_garch.py` | The original v2.1 script, kept unchanged for reference and regression testing. |
@@ -15,10 +17,11 @@ rugarch, statsmodels SARIMAX and Python `arch`.
 ## Quick start
 
 ```bash
-cd sarimax_garch && pip install -e . && pytest          # 16 tests
+cd sarimax_garch && pip install -e . && pytest          # 20 tests
 ```
 ```python
-from sarimax_garch import SARIMAXGARCH
+from sarimax_garch import SARIMAXGARCH, compare
+print(compare(y, exog=X, order=(1, 0, 1), trend="c").summary())    # GARCH or not? (GUIDE.md)
 res = SARIMAXGARCH(y, exog=X, order=(1, 0, 1), trend="c", garch=(1, 1)).fit()
 print(res.summary())
 fc = res.get_forecast(12, exog=X_future).summary_frame()

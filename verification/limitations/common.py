@@ -87,9 +87,10 @@ def skewt_moments(nu, lam):
 # DGP: y_t = x_t' g + u_t,  u_t = c + phi u_{t-1} + eps_t,  eps_t = sigma_t z_t,
 #      sigma_t^2 = omega + (alpha + lev * 1[eps_{t-1} < 0]) eps_{t-1}^2 + beta sigma_{t-1}^2
 # -----------------------------------------------------------------------------
-def simulate(T, c, phi, omega, alpha, beta, z, lev=0.0, X=None, g=None, burn=500):
+def simulate(T, c, phi, omega, alpha, beta, z, lev=0.0, X=None, g=None, burn=500, theta=0.0):
     """z: standardised shocks of length T + burn.  Returns y, u, eps, sig2 (post burn-in) and the
-    end-of-sample state needed to simulate the true predictive distribution."""
+    end-of-sample state needed to simulate the true predictive distribution.
+    theta: MA(1) coefficient, u_t = c + phi u_{t-1} + eps_t + theta eps_{t-1} (0 = the AR(1) of E1-E5)."""
     n = T + burn
     assert len(z) == n
     persist = alpha + lev / 2 + beta
@@ -102,21 +103,26 @@ def simulate(T, c, phi, omega, alpha, beta, z, lev=0.0, X=None, g=None, burn=500
         sig2[t] = omega + (alpha + lev * (e1 < 0)) * e1 * e1 + beta * sig2[t - 1]
         eps[t] = np.sqrt(sig2[t]) * z[t]
         u[t] = c + phi * u[t - 1] + eps[t]
+        if theta:
+            u[t] += theta * e1
     u, eps, sig2 = u[burn:], eps[burn:], sig2[burn:]
     y = u + (0.0 if X is None else np.asarray(X) @ np.asarray(g))
     return y, u, eps, sig2
 
 
-def true_future(state, H, M, rng, c, phi, omega, alpha, beta, zdist, lev=0.0, xg_future=None):
+def true_future(state, H, M, rng, c, phi, omega, alpha, beta, zdist, lev=0.0, xg_future=None, theta=0.0):
     """M paths of y_{T+1..T+H} from the TRUE model, given the true end-of-sample state
-    (u_T, eps_T, sig2_T).  zdist: dict(dist=..., nu=..., lam=...)."""
+    (u_T, eps_T, sig2_T).  zdist: dict(dist=..., nu=..., lam=...).  theta: MA(1) coefficient."""
     uT, eT, s2T = state
     u = np.full(M, uT); e = np.full(M, eT); s2 = np.full(M, s2T)
     out = np.empty((M, H))
     for h in range(H):
         s2 = omega + (alpha + lev * (e < 0)) * e * e + beta * s2
+        e_prev = e
         e = np.sqrt(s2) * draw_z(rng, M, **zdist)
         u = c + phi * u + e
+        if theta:
+            u = u + theta * e_prev
         out[:, h] = u + (0.0 if xg_future is None else xg_future[h])
     return out
 

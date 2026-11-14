@@ -90,7 +90,38 @@ def e5():
           f"worst 'converged=True' fit: {d['gap_converged']['max']:.2f} units below")
 
 
+def e6():
+    d = load("e6_sarimax_vs_garch")
+    print("Mean parameters: RMSE GN / SM (< 1 = GARCH more accurate) and 95% CI coverage (SM opg · SM robust · GN robust)\n")
+    print("| design | ARMA coef RMSE SM → GN | slope RMSE SM → GN | ARMA coef cover | slope cover | intercept cover |")
+    print("|---|---|---|---|---|---|")
+    for k, v in d.items():
+        arma = "phi" if "AR1" in k else "theta"
+        P, C = v["params"], v["coverage"]
+        cov = lambda p: " · ".join(f"{C[n][p]:.2f}" for n in ("SM opg", "SM robust", "GN robust"))
+        print(f"| {k.replace(' | ', ', ')} | {P['SM'][arma]['rmse']:.3f} → {P['GN'][arma]['rmse']:.3f} | {P['SM']['x1']['rmse']:.3f} → "
+              f"{P['GN']['x1']['rmse']:.3f} | {cov(arma.replace('phi', 'phi').replace('theta', 'theta'))} | {cov('x1')} | "
+              f"{cov('intercept')} |")
+    print("\nForecasts: CRPS GN / SM at h1 · h6 · h12; 90% coverage at h1 (SM · GN) overall, calm, turbulent; "
+          "point RMSE vs the true conditional mean (in predictive SD) at h1, SM · GN\n")
+    print("| design | CRPS GN/SM h1 · h6 · h12 | cover h1 all | calm | turbulent | CRPS GN/SM calm · turbulent | point RMSE h1 |")
+    print("|---|---|---|---|---|---|---|")
+    for k, v in d.items():
+        F = v["forecast"]
+        f1 = F["h1"]
+        print(f"| {k.replace(' | ', ', ')} | {f1['crps_ratio']:.3f} · {F['h6']['crps_ratio']:.3f} · {F['h12']['crps_ratio']:.3f} | "
+              f"{f1['cov_sm']:.2f} · {f1['cov_gn']:.2f} | {f1['cov_sm_calm']:.2f} · {f1['cov_gn_calm']:.2f} | "
+              f"{f1['cov_sm_turb']:.2f} · {f1['cov_gn_turb']:.2f} | {f1['crps_ratio_calm']:.3f} · "
+              f"{f1['crps_ratio_turb']:.3f} | {f1['rmse_sm']:.3f} · {f1['rmse_gn']:.3f} |")
+    print("\nDetection: share of series where each rule chooses GARCH (truth 'none' = false positives)\n")
+    rules = list(next(iter(d.values()))["detection"])
+    print("| design | " + " | ".join(rules) + " | GN on boundary |")
+    print("|---|" + "---|" * (len(rules) + 1))
+    for k, v in d.items():
+        print(f"| {k.replace(' | ', ', ')} | " + " | ".join(f"{v['detection'][r]:.2f}" for r in rules) + f" | {v['flags']['boundary']:.2f} |")
+
+
 if __name__ == "__main__":
-    for name, fn in (("E1", e1), ("E2", e2), ("E3", e3), ("E4", e4), ("E5", e5)):
+    for name, fn in (("E1", e1), ("E2", e2), ("E3", e3), ("E4", e4), ("E5", e5), ("E6", e6)):
         print(f"\n### {name}\n")
         fn()
