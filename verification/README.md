@@ -18,6 +18,10 @@ Version history:
 
 The original `../joint_armax_garch.py` (v2.1) is untouched.
 
+**Methodology limitations (2026-11-14):** see [`limitations/README.md`](limitations/README.md). It covers
+what the package delegates to statsmodels, how the GARCH-t bands cover, and what skewed shocks and leverage
+do to the mean estimates, with five Monte Carlo experiments and a ranked list of fixes.
+
 ## v3.0 — SARIMAX formulation by default, and the full validation grid
 
 The default is now `xreg="regression"`: u_t = y_t − x_t'γ follows the ARMA-GARCH, i.e.
