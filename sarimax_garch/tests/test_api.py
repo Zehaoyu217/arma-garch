@@ -182,7 +182,7 @@ def test_backtest_both_backends(data):
     y2, X2 = y.iloc[:400], X.iloc[:400]
     for garch in ((1, 1), None):
         bt = SARIMAXGARCH(y2, exog=X2, order=(1, 0, 1), trend="c", garch=garch).backtest(horizon=6, start=300, step=25)
-        assert list(bt.columns) == ["rmse", "mae", "crps", "coverage90"] and len(bt) == 6
+        assert list(bt.columns) == ["rmse", "mae", "crps", "logscore", "coverage90"] and len(bt) == 6
         assert np.isfinite(bt.values).all() and (bt["crps"] <= bt["rmse"]).all()
 
 

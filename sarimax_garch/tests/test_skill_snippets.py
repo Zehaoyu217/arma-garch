@@ -50,7 +50,9 @@ def test_guide_python_blocks_run(namespace):
                 pytest.fail(f"guide code block {i} failed: {type(e).__name__}: {e}\n---\n{code}")
     assert ns["cmp"].recommendation["model"] and ns["lr"] >= 0
     assert ns["fc"].conf_int(alpha=0.10, method="simulated").shape == (12, 2)
-    assert ns["bt_g"].shape[0] == 6
+    assert ns["bt_g"].shape[0] == 6 and "logscore" in ns["bt_g"].columns
+    assert len(ns["ls_g"]) == 50 and 0 <= ns["dm_p"] <= 1
+    assert np.isfinite(ns["cmp_ho"].table.loc["SARIMAX", "holdout_logscore"])
 
 
 def test_skill_python_blocks_run(namespace):

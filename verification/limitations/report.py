@@ -121,7 +121,21 @@ def e6():
         print(f"| {k.replace(' | ', ', ')} | " + " | ".join(f"{v['detection'][r]:.2f}" for r in rules) + f" | {v['flags']['boundary']:.2f} |")
 
 
+def e8():
+    d = load("e8_holdout_logscore")
+    print("Share of series where a Diebold-Mariano test (5%) on the holdout scores says the first model is "
+          "significantly better (in brackets: the second), and the in-sample LR test on the training data\n")
+    print("| design | LR in-sample | GN vs SM: log score | GN vs SM: CRPS | Δ log score (nats/obs) · CRPS ratio | "
+          "GT vs GN: log score | GT vs GN: CRPS | Δ log score · CRPS ratio |")
+    print("|---|---|---|---|---|---|---|---|")
+    for k, v in d.items():
+        print(f"| {k.replace(' | ', ', ')} | {v['lr_in_sample']:.2f} | {v['ls_win']:.2f} ({v['ls_loss']:.2f}) | "
+              f"{v['crps_win']:.2f} ({v['crps_loss']:.2f}) | {v['d_logscore']:+.4f} · {v['crps_ratio']:.4f} | "
+              f"{v['ls_t_win']:.2f} ({v['ls_t_loss']:.2f}) | {v['crps_t_win']:.2f} ({v['crps_t_loss']:.2f}) | "
+              f"{v['d_logscore_t']:+.4f} · {v['crps_ratio_t']:.4f} |")
+
+
 if __name__ == "__main__":
-    for name, fn in (("E1", e1), ("E2", e2), ("E3", e3), ("E4", e4), ("E5", e5), ("E6", e6)):
+    for name, fn in (("E1", e1), ("E2", e2), ("E3", e3), ("E4", e4), ("E5", e5), ("E6", e6), ("E8", e8)):
         print(f"\n### {name}\n")
         fn()

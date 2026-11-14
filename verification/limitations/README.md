@@ -7,7 +7,8 @@ printed by `report.py` from `out/*.json`.
 ```bash
 cd verification/limitations
 python3 e1_backends.py && python3 e2_bands.py && python3 e3_skew.py && python3 e4_leverage.py \
-  && python3 e5_converged.py && python3 e6_sarimax_vs_garch.py && python3 report.py   # about 7 minutes on 12 cores
+  && python3 e5_converged.py && python3 e6_sarimax_vs_garch.py && python3 e8_holdout_logscore.py \
+  && python3 report.py                                       # about 9 minutes on 12 cores
 python3 e7_arch_mamean.py      # needs a Python with arch >= 9.0 (not a package dependency)
 ```
 The results of E1–E5 are identical to the last digit (all 2,267 numbers in `out/`) on Python 3.9.6 and 3.11.15,
@@ -292,6 +293,41 @@ Under the engine's likelihood, arch's estimate is never better than the engine's
 
 arch ≥ 9.0 has pure MA(q) means, but still no joint ARMA(p,q) and no regression-with-ARMA-errors form.
 
+### E8 — holdout log-likelihood against CRPS (12 designs, 300 series each)
+
+The prequential one-step holdout log score is the metric microprediction's
+[`skaters`](https://github.com/microprediction/skaters) (Peter Cotton) ranks forecasters by.
+
+**Design:**
+- y = 0.5x + u, with u AR(1) (φ .5).
+- GARCH: none, typical (α .10, β .75) or persistent (α .08, β .90), with normal shocks; plus persistent GARCH with t(5) shocks.
+- Train / holdout sizes: 250/60, 500/120 and 1000/250.
+- Each model is fitted on the training part and its parameters frozen: SM = SARIMAX, GN = GARCH normal, GT = GARCH t.
+- Each held-out observation is scored one step ahead, by the log score (`holdout_logscore`) and by the exact CRPS of the same predictive distribution (normal or t closed form).
+- Per series, a Diebold–Mariano test (Newey–West) decides "significantly better" at 5%.
+- The package's `holdout_logscore` reproduces E8's own computation exactly.
+
+| design | in-sample LR picks GARCH | DM picks GN over SM: log score / CRPS | Δ log score GN − SM (nats/obs) · CRPS ratio | DM picks GT over GN: log score / CRPS | Δ log score GT − GN · CRPS ratio |
+|---|---|---|---|---|---|
+| no GARCH | 0.02–0.04 | 0.02–0.04 / 0.02–0.04 | −0.0028 to −0.0005 · 1.000–1.001 | 0.01–0.03 / 0.03–0.05 | ≈ 0 · 1.000 |
+| typical GARCH | 0.52–0.98 | 0.11–0.21 / 0.07–0.19 | +0.012 to +0.017 · 0.996 | 0.01–0.02 / 0.05–0.07 | ≈ 0 · 1.000 |
+| persistent GARCH | 0.76–1.00 | 0.27–0.58 / 0.26–0.56 | +0.049 to +0.092 · 0.981–0.987 | 0.00–0.04 / 0.04–0.08 | ≈ 0 · 1.000 |
+| persistent GARCH, t(5) shocks | 0.77–1.00 | 0.27–0.52 / 0.30–0.63 | +0.111 to +0.150 · 0.965–0.977 | 0.16–0.32 / 0.21–0.32 | +0.048 to +0.082 · 0.991–0.994 |
+
+Findings:
+- **Valid across backends.** On homoskedastic data the SARIMAX and GARCH holdout log scores agree within 0.003
+  nats per observation. In-sample log-likelihoods of the same models differ by about 1.5 (E1).
+- **The log score measures density quality that CRPS hardly registers.** Getting the tails right (t vs normal
+  under t(5) shocks) is worth +0.05 to +0.08 nats per observation, while CRPS moves only 0.6–0.9%.
+- **The two scores have similar power per series.** The log score is 1–5 points ahead with normal shocks.
+  CRPS is ahead with t(5) shocks: log-score differences are heavy-tailed there, which weakens the
+  Diebold–Mariano test.
+- **Neither replaces the in-sample LR test at these holdout sizes.** The holdout is the out-of-sample check
+  across model classes (backends, d, dist), not the GARCH detector. Report both scores, as `skaters` does.
+- `backtest()` now reports `logscore` by horizon on both backends. For GARCH beyond one step the density is an
+  exact mixture over the simulated paths: it integrates to 1, matches the closed form at h = 1, and needs no
+  kernel bandwidth.
+
 ## Literature: what is known, what is new
 
 The full review is [`reports/ARMA GARCH limitations literature review.md`](reports/ARMA%20GARCH%20limitations%20literature%20review.md).
@@ -375,6 +411,9 @@ numbers to the guide's codes:
 - **Start with `compare(y, exog=X, order=..., trend="c")`** (package 0.3.0). It runs the checks below and prints a
   recommendation with flagged limitations and fallbacks; `sarimax_garch/GUIDE.md` is the workflow behind it.
 - **If you keep SARIMAX while GARCH may be present**, fit it with `cov_type="robust"` (E6).
+- **To compare models across backends, d or distributions, use the holdout log-likelihood.** Call
+  `compare(..., holdout=0.2)`, or `holdout_logscore()` with `dm_test()`, and report CRPS alongside (E8). Never
+  compare in-sample llf or AIC across backends.
 - **For the mean** (regression effects, long-run level, point forecasts), use `garch=(1, 1), dist="normal"`.
   It is consistent under skew; under leverage, cross-check the intercept against `garch=None`. Use
   `dist="t"` for the mean only when its intercept agrees with the normal fit's, within one robust SE of

@@ -783,9 +783,12 @@ def forecast(res, horizon, X_future=None, n_sims=10_000, seed=None):
         e_prev = np.full(n_sims, res.eps[-1])
         s2_prev = np.full(n_sims, res.sig2[-1])
         sims = np.empty((n_sims, h))
+        shocks = np.empty((n_sims, h))          # e_{T+i} and sigma^2_{T+i} of each path: the one-step
+        svar = np.empty((n_sims, h))            # conditional densities behind predictive_logpdf()
         for i in range(h):
             s2 = omega + alpha * e_prev ** 2 + beta * s2_prev
             e = np.sqrt(s2) * z[:, i]
+            shocks[:, i], svar[:, i] = e, s2
             m = c + xg_in[i]
             for j in range(p):
                 m = m + phi[j] * y_lag[j]
@@ -799,7 +802,8 @@ def forecast(res, horizon, X_future=None, n_sims=10_000, seed=None):
                 e_lag = [e] + e_lag[:-1]
             e_prev, s2_prev = e, s2
 
-    out = {"variance_innovation": vinn, "psi": psi}
+    out = {"variance_innovation": vinn, "psi": psi, "dist": dist, "nu": nu,
+           "sim_shocks": shocks if sims is not None else None, "sim_var": svar if sims is not None else None}
     if d > 0:
         out["mean_diff"], out["variance_diff"] = mean, var_diff
         out["mean"] = _integrate(mean, res.y_levels_tail, d)
@@ -810,6 +814,34 @@ def forecast(res, horizon, X_future=None, n_sims=10_000, seed=None):
     s_ = out["sims"]
     out["quantiles"] = (lambda a: np.quantile(s_, a, axis=0)) if s_ is not None else None
     return out
+
+
+def predictive_logpdf(fc, x):
+    """Log predictive density of realised values x (one per forecast step; levels if d > 0) under the
+    forecast distribution of forecast(..., n_sims > 0): the log score.  Averaged over a holdout it is the
+    holdout log-likelihood (nats per observation; higher is better).
+
+    No kernel: given a simulated path up to T+h-1, y_{T+h} is that path's conditional mean plus
+    sigma_{T+h} z with z ~ N(0,1) or standardised t(nu), so the h-step density is the average over the
+    paths of f_z((x - centre) / sigma) / sigma.  Exact at h = 1 (every path has the same centre and sigma);
+    beyond, the only error is Monte Carlo error.  The shock enters the level with coefficient 1 for every
+    d, so centre = simulated value - simulated shock."""
+    if fc.get("sims") is None or fc.get("sim_shocks") is None:
+        raise ValueError("needs simulated paths: forecast(..., n_sims > 0)")
+    x = np.asarray(x, float).ravel()
+    h = fc["sims"].shape[1]
+    if x.size != h:
+        raise ValueError(f"x must have one value per forecast step ({h}), got {x.size}")
+    sd = np.sqrt(fc["sim_var"])
+    z = (x[None, :] - (fc["sims"] - fc["sim_shocks"])) / sd
+    if fc["dist"] == "t":
+        k = np.sqrt(fc["nu"] / (fc["nu"] - 2.0))
+        lf = stats.t.logpdf(z * k, fc["nu"]) + np.log(k)
+    else:
+        lf = stats.norm.logpdf(z)
+    lf = lf - np.log(sd)
+    top = lf.max(axis=0)
+    return top + np.log(np.mean(np.exp(lf - top), axis=0))
 
 
 # -----------------------------------------------------------------------------
@@ -957,7 +989,7 @@ def backtest(y, X=None, p=1, q=0, d=0, dist="normal", horizon=12, start=None, st
     For each origin t0 = start, start + step, ... (t0 + horizon <= T): fit on y[:t0] (and X[:t0]),
     forecast `horizon` steps with the realised X[t0:t0 + horizon] -- the "macro path given"
     setting -- and score against the realised y.  fit_kw go to fit_joint (xreg, fixed, init, ...).
-    Returns dict(h, rmse, mae, crps, coverage90 (one per level), n_origins, origins): arrays by horizon.
+    Returns dict(h, rmse, mae, crps, logscore (mean log predictive density, nats), coverage90, n_origins, origins).
 
     Use it to decide between a levels model (d=0) and a differences model (d=1), and between GARCH
     and fixed={"alpha": 0, "beta": 0}, by CRPS and coverage at the horizons you care about -- AIC
@@ -976,6 +1008,7 @@ def backtest(y, X=None, p=1, q=0, d=0, dist="normal", horizon=12, start=None, st
         raise ValueError(f"no forecast origins: need start + horizon <= T (T={T}, start={start}, horizon={horizon})")
     err = np.empty((len(origins), horizon))
     crp = np.empty((len(origins), horizon))
+    lsc = np.empty((len(origins), horizon))
     cov = {lv: np.empty((len(origins), horizon)) for lv in levels}
     prev = None
     with warnings.catch_warnings():
@@ -988,13 +1021,14 @@ def backtest(y, X=None, p=1, q=0, d=0, dist="normal", horizon=12, start=None, st
                           n_sims=n_sims, seed=seed + i)
             actual = y[t0:t0 + horizon]
             err[i] = fc["mean"] - actual
+            lsc[i] = predictive_logpdf(fc, actual)
             for h in range(horizon):
                 crp[i, h] = _crps(fc["sims"][:, h], actual[h])
                 for lv in levels:
                     lo, hi = np.quantile(fc["sims"][:, h], [(1 - lv) / 2, 1 - (1 - lv) / 2])
                     cov[lv][i, h] = lo <= actual[h] <= hi
     out = dict(h=np.arange(1, horizon + 1), rmse=np.sqrt(np.mean(err ** 2, 0)), mae=np.mean(np.abs(err), 0),
-               crps=np.mean(crp, 0), n_origins=len(origins), origins=np.array(origins))
+               crps=np.mean(crp, 0), logscore=np.mean(lsc, 0), n_origins=len(origins), origins=np.array(origins))
     for lv in levels:
         out[f"coverage{int(round(lv * 100))}"] = np.mean(cov[lv], 0)
     return out

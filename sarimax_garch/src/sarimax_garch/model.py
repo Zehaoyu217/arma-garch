@@ -283,8 +283,10 @@ class SARIMAXGARCH:
         For origins t0 = start, start+step, ... (t0 + horizon <= T): refit on the first t0 observations
         with this model's backend, forecast `horizon` steps, score against the realised values.
         Returns a DataFrame indexed by horizon: rmse, mae, crps (proper score of the predictive
-        distribution -- Gaussian closed form for the statsmodels backend, simulated for GARCH) and
-        coverage of the (1 - alpha) interval.  Compare levels (d=0) vs differences (d=1) and GARCH vs
+        distribution -- Gaussian closed form for the statsmodels backend, simulated for GARCH), logscore
+        (mean log predictive density of the realised value, nats, higher is better -- the holdout
+        log-likelihood; exact Gaussian for statsmodels, the path mixture of GARCHPredictionResults.logpdf
+        for GARCH) and coverage of the (1 - alpha) interval.  Compare levels (d=0) vs differences (d=1) and GARCH vs
         not with it: AIC/BIC cannot compare models fitted to differently differenced data.
         result.attrs["n_origins"] / ["n_not_converged"] record how many refits did not converge
         (a warning is raised when any did)."""
@@ -299,6 +301,7 @@ class SARIMAXGARCH:
         X_f = None if self.exog is None else pd.DataFrame(self.exog, index=self._index, columns=self.exog_names)
         z = stats.norm.ppf(1 - alpha / 2)
         err = np.empty((len(origins), horizon)); crps = np.empty_like(err); cov = np.empty_like(err)
+        lsc = np.empty_like(err)
         prev, not_converged = None, 0
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -317,6 +320,7 @@ class SARIMAXGARCH:
                     fc = res.get_forecast(horizon, exog=Xf, n_sims=n_sims, seed=seed + i)
                     mean = fc.predicted_mean.values
                     sims = fc.sims
+                    lsc[i] = fc.logpdf(actual).values
                     for h in range(horizon):
                         crps[i, h] = _core._crps(sims[:, h], actual[h])
                         lo, hi = np.quantile(sims[:, h], [alpha / 2, 1 - alpha / 2])
@@ -325,10 +329,12 @@ class SARIMAXGARCH:
                     fc = res.get_forecast(horizon, exog=Xf)
                     mean, se = np.asarray(fc.predicted_mean), np.asarray(fc.se_mean)
                     crps[i] = _crps_normal(mean, se, actual)
+                    lsc[i] = stats.norm.logpdf(actual, mean, se)
                     cov[i] = np.abs(actual - mean) <= z * se
                 err[i] = mean - actual
         out = pd.DataFrame({"rmse": np.sqrt(np.mean(err ** 2, 0)), "mae": np.mean(np.abs(err), 0),
-                            "crps": crps.mean(0), f"coverage{int(round((1 - alpha) * 100))}": cov.mean(0)},
+                            "crps": crps.mean(0), "logscore": lsc.mean(0),
+                            f"coverage{int(round((1 - alpha) * 100))}": cov.mean(0)},
                            index=pd.Index(np.arange(1, horizon + 1), name="h"))
         out.attrs.update(n_origins=len(origins), n_not_converged=int(not_converged))
         if not_converged:
@@ -518,7 +524,7 @@ class SARIMAXGARCHResults:
         fc = _core.forecast(self._res, steps, X_future=self.model._future_exog(exog, steps), n_sims=n_sims, seed=seed)
         index = _forecast_index(self.model._index, steps)
         return GARCHPredictionResults(fc["mean"], fc["variance"], index, self.model.endog_name, fc["sims"],
-                                      cond_var=fc["variance_innovation"])
+                                      cond_var=fc["variance_innovation"], raw=fc)
 
     def forecast(self, steps=1, exog=None):
         return self.get_forecast(steps, exog=exog, n_sims=0).predicted_mean
@@ -547,7 +553,8 @@ class GARCHPredictionResults:
                            "volatility forecast" means.  Equals var_pred_mean at h = 1.
     conditional_volatility its square root."""
 
-    def __init__(self, mean, var, index, name, sims=None, cond_var=None):
+    def __init__(self, mean, var, index, name, sims=None, cond_var=None, raw=None):
+        self._raw = raw                                   # the engine's forecast dict (for logpdf)
         self.predicted_mean = pd.Series(np.asarray(mean, float), index=index, name="predicted_mean")
         self.var_pred_mean = pd.Series(np.asarray(var, float), index=index, name="var_pred_mean")
         self.se_mean = pd.Series(np.sqrt(np.asarray(var, float)), index=index, name="se_mean")
@@ -580,3 +587,12 @@ class GARCHPredictionResults:
         if self.sims is None:
             raise ValueError("no simulated paths: call get_forecast with n_sims > 0")
         return pd.Series(np.quantile(self.sims, q, axis=0), index=self.predicted_mean.index, name=f"q{q}")
+
+    def logpdf(self, actual):
+        """Log predictive density of the realised values (one per forecast step): the log score, in nats
+        (higher is better); its mean over a holdout is the holdout log-likelihood.  Exact at h = 1, and a
+        kernel-free Monte Carlo mixture over the simulated paths beyond (see _core.predictive_logpdf)."""
+        if self._raw is None or self.sims is None:
+            raise ValueError("no simulated paths: call get_forecast with n_sims > 0")
+        lp = _core.predictive_logpdf(self._raw, np.asarray(actual, float).ravel())
+        return pd.Series(lp, index=self.predicted_mean.index, name="logpdf")

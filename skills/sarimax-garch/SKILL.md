@@ -179,6 +179,16 @@ coverage is badly off. Keep `start` at 100+ observations when a spec has GARCH. 
 origins) × (fit time), so widen `step` on long series. `bt.attrs["n_not_converged"]` counts refits that did
 not converge (it also warns); if it is not 0, centre the exog and rerun before trusting the scores.
 
+`backtest()` also reports `logscore`: the mean log predictive density of the realised value (nats; higher is
+better). For one-step comparisons with the parameters frozen, use `holdout_logscore(...)` with `dm_test(...)`,
+or `compare(..., holdout=0.2)`. This prequential holdout log-likelihood is the metric of microprediction's
+`skaters`, and it is valid across backends, d and normal vs t, unlike in-sample llf or AIC.
+- It registers density gains that CRPS hardly sees. Under t(5) shocks, t vs normal gains +0.05 to +0.08
+  nats/obs, while CRPS moves 0.6–0.9%.
+- The two scores have similar per-series power, and CRPS is ahead under fat tails.
+- Report both scores. Neither replaces the in-sample LR test as the GARCH detector (E8 in
+  `verification/limitations/`).
+
 ### 8. Diagnostics and small-sample inference
 ```python
 res.test_serial_correlation(lags=12)     # Ljung-Box on the standardized residuals: remaining autocorrelation

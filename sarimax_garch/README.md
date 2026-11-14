@@ -30,7 +30,11 @@ fc.conf_int(method="simulated")                                         # exact 
 `compare(y, exog=X, order=(p, d, q), trend="c")` fits SARIMAX, the engine's constant-variance null and GARCH
 (normal and t) on the same data. It tests for ARCH with one likelihood per comparison (never SARIMAX's AIC
 against a GARCH fit's), runs the sign-bias and t-vs-normal intercept checks, and returns a recommendation with
-flagged limitations and fallbacks; `backtest=dict(horizon=12)` adds an out-of-sample CRPS comparison.
+flagged limitations and fallbacks. `backtest=dict(horizon=12)` adds an out-of-sample comparison by CRPS and log
+score. `holdout=0.2` adds the prequential one-step **holdout log-likelihood** of every model, with
+Diebold–Mariano tests; this is the metric of microprediction's `skaters`, and unlike in-sample llf or AIC it is
+valid across backends, d and distributions. Standalone versions: `holdout_logscore()` and `dm_test()`.
+`fc.logpdf(actual)` scores any GARCH forecast: it is exact at h = 1, and an exact path mixture beyond.
 [`GUIDE.md`](GUIDE.md) explains when GARCH gains an edge over plain SARIMAX (regime-correct intervals,
 volatility forecasts, more precise mean estimates, valid AR/MA SEs) and when it does not (point forecasts,
 long horizons, short samples), how MA terms work with GARCH, and what each wrong choice costs — all measured.
