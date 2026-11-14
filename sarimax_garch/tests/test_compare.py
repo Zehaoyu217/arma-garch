@@ -48,6 +48,21 @@ def test_holdout_logscore_is_comparable_across_backends():
     assert np.isfinite(res.table.loc["SARIMAX", "holdout_logscore"])
 
 
+def test_dm_test_statistic_lag_and_small_sample_rule():
+    d = np.random.default_rng(5).normal(0.1, 1.0, size=80)
+    n = len(d)
+    stat_n, p_n = dm_test(d, small_sample=False)
+    L = int(np.floor(4 * (n / 100) ** (2 / 9)))                                   # = 3 at n = 80
+    dc = d - d.mean()
+    lrv = dc @ dc / n + 2 * sum((1 - k / (L + 1)) * (dc[k:] @ dc[:-k]) / n for k in range(1, L + 1))
+    assert abs(stat_n - d.mean() / np.sqrt(lrv / n)) < 1e-12 and abs(p_n - 2 * stats.norm.sf(abs(stat_n))) < 1e-12
+    stat, p = dm_test(d)                                                          # HLN factor, t(n - 1)
+    assert abs(stat - stat_n * np.sqrt((n - 1) / n)) < 1e-12 and abs(p - 2 * stats.t.sf(abs(stat), n - 1)) < 1e-12
+    s6, _ = dm_test(d, h=6, small_sample=False)                                   # lag = max(h - 1, L) = 5
+    lrv6 = dc @ dc / n + 2 * sum((1 - k / 6) * (dc[k:] @ dc[:-k]) / n for k in range(1, 6))
+    assert abs(s6 - d.mean() / np.sqrt(lrv6 / n)) < 1e-12
+
+
 def test_predictive_logpdf_exact_at_h1_and_a_density_beyond():
     w, _, _ = _core.simulate(1500, 0.05, [0.5], [0.3], 0.05, 0.08, 0.90, dist="t", nu=6.0, seed=3)
     r = _core.fit_joint(np.cumsum(w), p=1, q=1, d=1, dist="t")

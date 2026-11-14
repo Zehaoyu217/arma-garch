@@ -60,17 +60,29 @@ def holdout_logscore(endog, exog=None, order=(1, 0, 0), trend="c", garch=None, d
     return _core._loglik_obs(r.params, r.y, r.X, r.p, r.q, r.dist, r.init, r.xreg)[-n:]
 
 
-def dm_test(diff, lag=None):
-    """Diebold-Mariano test that a loss/score difference series has mean zero, with a Newey-West (Bartlett)
-    long-run variance (lag = floor(4 (n/100)^(2/9)) by default).  Returns (statistic, two-sided p-value)."""
+def dm_test(diff, h=1, lag=None, small_sample=True):
+    """Diebold & Mariano (1995) test of equal expected score for two forecasts scored on the same observations.
+
+    diff : d_t = S(F_A,t, y_t) - S(F_B,t, y_t), e.g. log score A - log score B (+ = A better), t = 1..n
+    H0   : E[d_t] = 0  (for the log score: equal Kullback-Leibler distance of A and B from the truth)
+    DM   = mean(d) / sqrt(LRV / n),  LRV = Newey-West (Bartlett) long-run variance of d_t with
+           lag = max(h - 1, floor(4 (n/100)^(2/9)))  (h-step forecasts overlap: d_t is MA(h - 1))
+    Under H0, DM -> N(0, 1) as n -> infinity (d_t stationary and mixing; with parameters estimated on a fixed or
+    rolling window the null is about the estimated models -- Giacomini & White 2006 -- and nested models are
+    allowed).  small_sample (default): Harvey, Leybourne & Newbold (1997) -- DM * sqrt((n + 1 - 2h + h(h-1)/n) / n)
+    against t(n - 1); E9 (verification/limitations) shows it brings the size closer to nominal.
+    Returns (statistic, two-sided p-value).  Reject H0 at level a when p < a; then DM > 0 means A is better."""
     d = np.asarray(diff, float)
     n = len(d)
-    lag = int(np.floor(4 * (n / 100) ** (2 / 9))) if lag is None else int(lag)
+    lag = max(int(h) - 1, int(np.floor(4 * (n / 100) ** (2 / 9)))) if lag is None else int(lag)
     dc = d - d.mean()
     lrv = dc @ dc / n + 2 * sum((1 - k / (lag + 1)) * (dc[k:] @ dc[:-k]) / n for k in range(1, lag + 1))
     if lrv <= 0:
         return 0.0, 1.0
     stat = d.mean() / np.sqrt(lrv / n)
+    if small_sample:
+        stat *= np.sqrt(max(n + 1 - 2 * h + h * (h - 1) / n, 1.0) / n)
+        return float(stat), float(2 * stats.t.sf(abs(stat), n - 1))
     return float(stat), float(2 * stats.norm.sf(abs(stat)))
 
 
@@ -322,9 +334,9 @@ def compare(endog, exog=None, order=(1, 0, 0), trend="c", dists=("normal", "t"),
         recommendation["holdout_logscore_diff"] = diff
         caveats.append(f"holdout ({n_ho} obs, parameters fitted on the rest): GARCH({ref}) - SARIMAX = {diff:+.4f} "
                        f"nats/obs, DM p = {pv:.3g}")
-        if model != "SARIMAX" and st < -1.96:
+        if model != "SARIMAX" and pv < alpha and st < 0:
             caveats.append("out of sample SARIMAX scores significantly better: prefer it for forecasting")
-        elif model == "SARIMAX" and st > 1.96:
+        elif model == "SARIMAX" and pv < alpha and st > 0:
             caveats.append("out of sample GARCH scores significantly better: consider it for forecasting")
 
     bt = None

@@ -87,8 +87,9 @@ def one(args):
                r_crps=float(np.mean(cr_gn) / np.mean(cr_sm)), d_ls_t=float(np.mean(ls_gt - ls_gn)),
                r_crps_t=float(np.mean(cr_gt) / np.mean(cr_gn)))
     for key, dd in (("ls", ls_gn - ls_sm), ("crps", cr_sm - cr_gn), ("ls_t", ls_gt - ls_gn), ("crps_t", cr_gn - cr_gt)):
-        st, _ = dm_test(dd)                      # + = the GARCH (or t) model better
-        out[f"{key}_win"], out[f"{key}_loss"] = bool(st > 1.96), bool(st < -1.96)
+        st, pv = dm_test(dd)                     # + = the GARCH (or t) model better; HLN-corrected, t(n-1)
+        out[f"{key}_win"], out[f"{key}_loss"] = bool(pv < 0.05 and st > 0), bool(pv < 0.05 and st < 0)
+        out[f"{key}_stat"] = float(st)
     if seed % 1000 == 0:                         # consistency: the package's holdout_logscore gives the same scores
         ref = holdout_logscore(y, exog=X, order=(1, 0, 0), garch=(1, 1), holdout=n_ho)
         out["check"] = float(np.max(np.abs(ref - ls_gn)) + np.max(np.abs(
@@ -107,13 +108,14 @@ def check_crps_t():
 def main():
     R = int(sys.argv[1]) if len(sys.argv) > 1 else 300
     check_crps_t()
-    res = {}
+    res, dm_stats = {}, {}
     with Pool(12) as pool:
         for i, dgp in enumerate(DGPS):
             for j, (n_tr, n_ho) in enumerate(SIZES):
                 rows = pool.map(one, [(dgp, n_tr, n_ho, 900_000 + 100_000 * i + 10_000 * j + r) for r in range(R)])
                 f = lambda k: float(np.mean([r[k] for r in rows]))
                 key = f"{dgp} | train {n_tr} / holdout {n_ho}"
+                dm_stats[key] = {s: [r[f"{s}_stat"] for r in rows] for s in ("ls", "crps", "ls_t", "crps_t")}
                 res[key] = dict(R=R, lr_in_sample=f("lr"), d_logscore=f("d_ls"), crps_ratio=f("r_crps"),
                                 ls_win=f("ls_win"), ls_loss=f("ls_loss"), crps_win=f("crps_win"), crps_loss=f("crps_loss"),
                                 d_logscore_t=f("d_ls_t"), crps_ratio_t=f("r_crps_t"), ls_t_win=f("ls_t_win"),
@@ -126,6 +128,8 @@ def main():
                       f"(GN {s['ls_t_loss']:.2f}) CRPS {s['crps_t_win']:.2f} (GN {s['crps_t_loss']:.2f})", flush=True)
     with open(f"{common.OUT}/e8_holdout_logscore.json", "w") as fh:
         json.dump(res, fh, indent=1)
+    with open(f"{common.OUT}/e8_dm_stats.json", "w") as fh:      # per-series DM statistics, read by E9
+        json.dump(dm_stats, fh)
 
 
 if __name__ == "__main__":

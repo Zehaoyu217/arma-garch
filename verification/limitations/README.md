@@ -8,7 +8,7 @@ printed by `report.py` from `out/*.json`.
 cd verification/limitations
 python3 e1_backends.py && python3 e2_bands.py && python3 e3_skew.py && python3 e4_leverage.py \
   && python3 e5_converged.py && python3 e6_sarimax_vs_garch.py && python3 e8_holdout_logscore.py \
-  && python3 report.py                                       # about 9 minutes on 12 cores
+  && python3 e9_dm_null.py && python3 report.py               # about 10 minutes on 12 cores
 python3 e7_arch_mamean.py      # needs a Python with arch >= 9.0 (not a package dependency)
 ```
 The results of E1–E5 are identical to the last digit (all 2,267 numbers in `out/`) on Python 3.9.6 and 3.11.15,
@@ -309,24 +309,69 @@ The prequential one-step holdout log score is the metric microprediction's
 
 | design | in-sample LR picks GARCH | DM picks GN over SM: log score / CRPS | Δ log score GN − SM (nats/obs) · CRPS ratio | DM picks GT over GN: log score / CRPS | Δ log score GT − GN · CRPS ratio |
 |---|---|---|---|---|---|
-| no GARCH | 0.02–0.04 | 0.02–0.04 / 0.02–0.04 | −0.0028 to −0.0005 · 1.000–1.001 | 0.01–0.03 / 0.03–0.05 | ≈ 0 · 1.000 |
-| typical GARCH | 0.52–0.98 | 0.11–0.21 / 0.07–0.19 | +0.012 to +0.017 · 0.996 | 0.01–0.02 / 0.05–0.07 | ≈ 0 · 1.000 |
-| persistent GARCH | 0.76–1.00 | 0.27–0.58 / 0.26–0.56 | +0.049 to +0.092 · 0.981–0.987 | 0.00–0.04 / 0.04–0.08 | ≈ 0 · 1.000 |
-| persistent GARCH, t(5) shocks | 0.77–1.00 | 0.27–0.52 / 0.30–0.63 | +0.111 to +0.150 · 0.965–0.977 | 0.16–0.32 / 0.21–0.32 | +0.048 to +0.082 · 0.991–0.994 |
+| no GARCH | 0.02–0.04 | 0.02–0.04 / 0.02–0.04 | −0.0028 to −0.0005 · 1.000–1.001 | 0.01–0.02 / 0.02–0.05 | ≈ 0 · 1.000 |
+| typical GARCH | 0.52–0.98 | 0.10–0.21 / 0.07–0.18 | +0.012 to +0.017 · 0.996 | 0.01–0.02 / 0.05–0.06 | ≈ 0 · 1.000 |
+| persistent GARCH | 0.76–1.00 | 0.26–0.58 / 0.24–0.56 | +0.049 to +0.092 · 0.981–0.987 | 0.00–0.04 / 0.04–0.08 | ≈ 0 · 1.000 |
+| persistent GARCH, t(5) shocks | 0.77–1.00 | 0.25–0.52 / 0.30–0.62 | +0.111 to +0.150 · 0.965–0.977 | 0.14–0.31 / 0.21–0.32 | +0.048 to +0.082 · 0.991–0.994 |
+
+(The Diebold–Mariano decisions use the shipped `dm_test`: Newey–West variance, the Harvey–Leybourne–Newbold
+correction, and t(n − 1) critical values; see E9.)
 
 Findings:
 - **Valid across backends.** On homoskedastic data the SARIMAX and GARCH holdout log scores agree within 0.003
   nats per observation. In-sample log-likelihoods of the same models differ by about 1.5 (E1).
 - **The log score measures density quality that CRPS hardly registers.** Getting the tails right (t vs normal
   under t(5) shocks) is worth +0.05 to +0.08 nats per observation, while CRPS moves only 0.6–0.9%.
-- **The two scores have similar power per series.** The log score is 1–5 points ahead with normal shocks.
-  CRPS is ahead with t(5) shocks: log-score differences are heavy-tailed there, which weakens the
+- **The two scores have similar power per series.** The log score is 2–4 points ahead with normal shocks.
+  CRPS is 5–10 points ahead with t(5) shocks: log-score differences are heavy-tailed there, which weakens the
   Diebold–Mariano test.
 - **Neither replaces the in-sample LR test at these holdout sizes.** The holdout is the out-of-sample check
   across model classes (backends, d, dist), not the GARCH detector. Report both scores, as `skaters` does.
 - `backtest()` now reports `logscore` by horizon on both backends. For GARCH beyond one step the density is an
   exact mixture over the simulated paths: it integrates to 1, matches the closed form at h = 1, and needs no
   kernel bandwidth.
+
+### E9 — is the Diebold–Mariano statistic N(0, 1) here? (`e9_dm_null.py`)
+
+The test (`dm_test`):
+- **Difference series:** d_t = S(F_A,t, y_t) − S(F_B,t, y_t) over the n held-out observations; for the log
+  score, d_t = log f_A,t(y_t) − log f_B,t(y_t).
+- **Hypotheses:** H0: E[d_t] = 0 against H1: E[d_t] ≠ 0. For the log score, E[d_t] = KL(g‖f_B) − KL(g‖f_A),
+  where g is the true predictive density.
+- **Statistic:** DM = d̄ / √(σ̂²/n). σ̂² is the Newey–West (Bartlett) long-run variance of d_t, with lag
+  L = max(h − 1, ⌊4(n/100)^{2/9}⌋). The statistic is multiplied by the Harvey–Leybourne–Newbold factor
+  √((n + 1 − 2h + h(h−1)/n)/n).
+- **Distribution:** N(0, 1) asymptotically; t(n − 1) in finite samples with the correction.
+- **Rejection rule:** reject H0 at 5% when |DM| > t₀.₉₇₅(n − 1), which is 2.00 at n = 60 and 1.97 at 250.
+  DM > 0 means A is better.
+
+**Part A: the null is exactly true, by construction.** Two forecasters are shifted ±0.25 SD from the true
+conditional mean, on persistent-GARCH data with normal or t(5) shocks; 4,000 series per cell. Rejection rate at
+nominal 5%:
+
+| d_t | n | naive paired t (γ₀ only) | Newey–West, N(0, 1) | + lag ≥ h − 1 + HLN, t(n − 1) (shipped) | shipped statistic: SD, 2.5/97.5% |
+|---|---|---|---|---|---|
+| one-step, constant-variance forecasts (heteroskedastic martingale difference) | 60 | 0.055–0.058 | 0.067–0.073 | 0.061–0.065 | 1.07, ±2.1–2.2 |
+| | 120 | 0.048 | 0.058–0.059 | 0.054–0.056 | 1.04 |
+| | 250–1000 | 0.048–0.052 | 0.048–0.055 | 0.048–0.053 | 0.99–1.01 |
+| 6-step, overlapping (MA(5)) | 60–250 | **0.25–0.27** | 0.09–0.13 | 0.08–0.09 | 1.12–1.16 |
+| | 1000 | 0.25 | 0.07–0.08 | 0.07 | 1.09–1.10 |
+
+Heavy tails (t(5) shocks, so ε has no fourth moment) do not change the one-step result. Overlapping multi-step
+differences need the HAC variance: without it, 25% false rejections. Even with it, size is 7–9%, so treat
+multi-step p-values as approximate.
+
+**Part B: the nested population null.** This is E8 without GARCH, where SARIMAX is the true model nested in
+GARCH (α = β = 0). The shipped statistic for GARCH − SARIMAX is *not* N(0, 1) here:
+- **Log score:** mean −0.19 to −0.33 and SD 1.15–1.26. It backs GARCH in 1.7–4.3% of series and SARIMAX in
+  6.7–8.0%.
+- **CRPS:** mean −0.11 to −0.25 and SD 1.10–1.16.
+
+The estimated larger model really is slightly worse out of sample, because it carries estimation noise. That is
+Clark & McCracken's (2001) nested-model result. As a test of "the estimated models score equally"
+(Giacomini & White 2006), the SARIMAX-better rejections are correct. As a test of "is there GARCH?", the test is
+conservative and the wrong tool: use the in-sample LR or LM test (Diebold 2015: DM tests compare forecasts, not
+models).
 
 ## Literature: what is known, what is new
 

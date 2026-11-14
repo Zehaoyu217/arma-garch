@@ -194,10 +194,52 @@ What E8 measured (300 series per cell; a Diebold–Mariano test at 5% on the hol
   - t vs normal under t(5) shocks: +0.05 to +0.08 nats per observation, against a CRPS gain of only 0.6–0.9%.
   - GARCH vs SARIMAX: +0.01 to +0.02 nats (typical GARCH), +0.05 to +0.09 (persistent) and +0.11 to +0.15 (persistent with t(5) shocks). The CRPS gains are 0.4%, 1.3–1.9% and 2.3–3.5%.
 - **Power is similar for the two scores.**
-  - The test picks GARCH over SARIMAX in 11–21% (typical) and 27–58% (persistent) of series by log score, and 7–19% and 26–56% by CRPS.
-  - With t(5) shocks CRPS is ahead (30–63% against 27–52%), because log-score differences are heavy-tailed.
+  - The test picks GARCH over SARIMAX in 10–21% (typical) and 26–58% (persistent) of series by log score, and 7–18% and 24–56% by CRPS.
+  - With t(5) shocks CRPS is ahead (30–62% against 25–52%), because log-score differences are heavy-tailed.
   - False alarms when there is no GARCH: 2–4% for both.
 - **Neither replaces the in-sample LR test.** On the training data it picks GARCH in 52–100% of the same series. Use the holdout to confirm the choice across model classes and to rank densities, and report both scores, as `skaters` does.
+
+**Why the Diebold–Mariano test, and exactly what it tests (`dm_test`).**
+
+*The question.* Will model A's density forecasts score better than model B's on future data? That is a
+question about two forecasts scored on the same observations, which is the question Diebold–Mariano answers.
+Diebold (2015) is explicit that it compares forecasts, not models.
+
+*Hypothesis.* Let d_t = log f_A,t(y_t) − log f_B,t(y_t) for the held-out observations t = 1, …, n. The null is
+H0: E[d_t] = 0, against H1: E[d_t] ≠ 0. For the log score, E[d_t] = KL(g‖f_B) − KL(g‖f_A), where g is the true
+predictive density. So the null says both forecasts are equally far from the truth, in Kullback–Leibler terms.
+
+*Statistic.* DM = d̄ / √(σ̂²/n). Here σ̂² is the Newey–West long-run variance of d_t, with Bartlett weights and
+lag L = max(h − 1, ⌊4(n/100)^{2/9}⌋). The statistic is then multiplied by the Harvey–Leybourne–Newbold
+small-sample factor √((n + 1 − 2h + h(h − 1)/n)/n).
+
+*Distribution under H0.* N(0, 1) as n → ∞, when d_t is stationary and weakly dependent. With the
+small-sample factor, the reference is t(n − 1).
+
+*Rejection rule at 5%.* Reject when |DM| > t₀.₉₇₅(n − 1), which is 2.00 at n = 60 and 1.97 at n = 250.
+DM > 0 means A is better. `dm_test(d)` returns (DM, p); reject when p < 0.05.
+
+*Why it fits here:*
+- The comparison is paired on the same observations, so a volatility shock that hits both models cancels.
+- d_t is heteroskedastic under GARCH, and autocorrelated for overlapping multi-step forecasts. The HAC variance
+  handles both; a naive paired t-test does not. In E9 it rejects a true null 25–26% of the time for 6-step
+  forecasts.
+- It needs no likelihood theory, so it works across backends, d, normal vs t, and nested or non-nested models.
+- On the log score it is the Amisano & Giacomini (2007) weighted likelihood-ratio test with uniform weights.
+- `skaters` uses the same per-series test.
+
+*Size when the null is exactly true (E9).*
+- One-step holdouts: 6.1–6.5% at n = 60, 5.4–5.6% at n = 120, and about 5% from n = 250.
+- Overlapping 6-step forecasts: 7–9% even with the correction, so treat multi-step p-values as approximate.
+
+*When it is the wrong test: deciding whether GARCH exists at all.* SARIMAX is GARCH with α = β = 0. When the
+smaller model is true, the estimated larger model is slightly worse out of sample, so the null distribution
+shifts. In E9 its mean is −0.19 to −0.33 and its SD 1.15–1.26. It then backs GARCH only 1.7–4.3% of the time
+and SARIMAX 6.7–8.0% (Clark & McCracken 2001).
+
+With parameters frozen at the training fit, the null the test checks is "the estimated models score equally"
+(Giacomini & White 2006). That is the forecasting question. The population question, "is there GARCH?",
+belongs to the in-sample LR test.
 
 ## 5. What goes wrong when the choice is wrong
 
@@ -243,6 +285,7 @@ What E8 measured (300 series per cell; a Diebold–Mariano test at 5% on the hol
 - **E6:** SARIMAX vs SARIMAX-GARCH both ways (`e6_sarimax_vs_garch.py`).
 - **E7:** MA-GARCH against arch 9.0 (`e7_arch_mamean.py`, needs `pip install "arch>=9.0"`).
 - **E8:** the holdout log-likelihood against CRPS (`e8_holdout_logscore.py`).
+- **E9:** the Diebold–Mariano statistic's null distribution, exact and nested (`e9_dm_null.py`).
 
 **Earlier studies**, in `../verification/README.md`:
 - 1:1 checks against rugarch, statsmodels and arch;
@@ -256,11 +299,16 @@ What E8 measured (300 series per cell; a Diebold–Mariano test at 5% on the hol
 - Christoffersen (1998), *International Economic Review* 39(4), 841–862 — conditional coverage of interval forecasts.
 - Demos & Sentana (1998), *Journal of Econometrics* 86(1), 97–127 — one-sided tests for GARCH; boundary mixtures.
 - Engle (1982), *Econometrica* 50(4), 987–1007 — ARCH-LM; ML vs least squares under ARCH.
+- Amisano & Giacomini (2007), *JBES* 25(2), 177–190 — comparing density forecasts by weighted likelihood ratio tests.
+- Clark & McCracken (2001), *Journal of Econometrics* 105(1), 85–110 — equal-accuracy tests for nested models.
+- Diebold (2015), *JBES* 33(1), doi:10.1080/07350015.2014.983236 — Diebold–Mariano tests compare forecasts, not models.
 - Diebold & Mariano (1995), *Journal of Business & Economic Statistics* 13(3), 253–263 — comparing predictive accuracy.
 - Engle & Ng (1993), *Journal of Finance* 48(5), 1749–1778 — sign-bias tests.
 - Francq & Zakoian (2004), *Bernoulli* 10(4), 605–637 — QMLE of ARMA-GARCH.
 - Francq, Roy & Zakoian (2005), *JASA* 100(470), 532–544 — ARMA diagnostics with uncorrelated, dependent errors.
+- Giacomini & White (2006), *Econometrica* 74(6), 1545–1578 — tests of (conditional) predictive ability for estimated, possibly nested models.
 - Gneiting & Raftery (2007), *JASA* 102(477), 359–378 — proper scoring rules, CRPS.
+- Harvey, Leybourne & Newbold (1997), *International Journal of Forecasting* 13(2), 281–291 — the small-sample correction.
 - Glosten, Jagannathan & Runkle (1993), *Journal of Finance* 48(5), 1779–1801 — GJR asymmetric GARCH.
 - Hughes, King & Kwek (2004), *Economics Letters* 83(2), 269–275 — information criteria for ARCH.
 - Lee (1991), *Economics Letters* 37(3), 265–271 — the LM test for GARCH.
