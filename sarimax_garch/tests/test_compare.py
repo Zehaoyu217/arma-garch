@@ -2,7 +2,7 @@
 import numpy as np
 from scipy import stats
 
-from sarimax_garch import SARIMAXGARCH, _core, compare, dm_test, holdout_logscore
+from sarimax_garch import SARIMAXGARCH, _core, compare, dm_test, garch_test, holdout_logscore
 
 
 def _x(T, seed):
@@ -86,6 +86,19 @@ def test_backtest_reports_logscore_on_both_backends():
         bt = SARIMAXGARCH(y, exog=x, order=(1, 0, 0), trend="c", garch=garch).backtest(horizon=3, start=250, step=10,
                                                                                          n_sims=500)
         assert "logscore" in bt.columns and np.all(np.isfinite(bt["logscore"])) and bt.columns[-1] == "coverage90"
+
+
+def test_garch_test_restricted_bootstrap():
+    T = 300
+    x = np.random.default_rng(6).normal(size=T)
+    y1, _, _ = _core.simulate(T, 0.1, [0.5], [], 0.02, 0.08, 0.90, dist="normal", X=x[:, None], gamma=[0.5], seed=6)
+    r1 = garch_test(y1, exog=x, order=(1, 0, 0), B=19, seed=1)
+    assert r1["B"] == 19 and r1["p_bootstrap"] <= 0.05 and r1["lr"] > np.quantile(r1["lr_boot"], 0.95)
+    y0, _, _ = _core.simulate(T, 0.1, [0.5], [], 1.0, 0.0, 0.0, dist="normal", X=x[:, None], gamma=[0.5], seed=7)
+    r0 = garch_test(y0, exog=x, order=(1, 0, 0), B=19, seed=1)
+    assert r0["p_bootstrap"] > 0.05 and np.quantile(r0["lr_boot"], 0.95) < 5.99   # chi2(2) is conservative here
+    res = compare(y1, exog=x, order=(1, 0, 0), dists=("normal",), bootstrap_lr=19)
+    assert "restricted-bootstrap" in res.recommendation["reason"] and res.recommendation["model"] != "SARIMAX"
 
 
 def test_short_sample_stops_garch():

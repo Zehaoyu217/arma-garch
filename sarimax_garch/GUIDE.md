@@ -109,6 +109,20 @@ Rules of thumb:
 - **The persistence α + β stays imprecise.** Its RMSE is 0.13–0.20 for typical monthly GARCH, and still
   0.13–0.15 at 600 observations, so do not over-read half-lives.
 
+**Why the power is low: GARCH itself, not the SARIMAX in front of it (E12).** E12 drives several mean models
+from the same GARCH shocks:
+- **Even with the shocks known exactly** (an oracle with no mean model), the LR test finds typical monthly GARCH
+  in only 24% of samples at T = 120, 48% at 240 and 81% at 480. For persistent GARCH it is 39%, 72% and 96%.
+- **Ordinary mean models cost little.** A constant mean, OLS, AR(1), ARMA(1,1) and ARIMA(1,1,1) cost 0–4 points.
+- **The airline model's seasonal MA costs the most in short samples,** fitted in two stages: 7–11 points at
+  T = 120 and 1–7 from 240.
+- **A near-unit-root MA costs no power,** but it pushes the one-stage LR's false-alarm rate to 5–10% (L9).
+- **Why the signal is weak:** it is only the autocorrelation of the squared shocks, about 0.13 at lag 1 for
+  typical GARCH and 0.21 for persistent GARCH. Squared shocks are heavy-tailed, so that correlation is noisy to
+  estimate.
+- **The choice of test matters more than the mean model.** ARCH-LM(4) has 3–25 points less power than the LR
+  test, and ARCH-LM(12) less again: 13% against 24% for typical GARCH at T = 120.
+
 **One stage or two?**
 - **Non-seasonal SARIMAX, any (p, d, q), with or without X:** the package estimates the mean and GARCH together
   in one likelihood. The only two-stage element is the ARCH-LM pre-test on the SARIMAX residuals.
@@ -148,6 +162,7 @@ section 1.
 |---|---|---|---|
 | ARCH-LM(12) on SARIMAX's residuals | no ARCH | 0–5% (conservative at T ≤ 120) | E10 |
 | LR test, GARCH vs constant variance, one stage / two stages | no GARCH | 1–5% / 0–4% | E6, E10 |
+| LR test with restricted-bootstrap p-value (`garch_test`) | no GARCH | 4.8% at T = 120, 3.0% at 250 (exact level by construction) | E11 |
 | Wald test of an AR/MA coefficient, SARIMAX's default `opg` | its true value, GARCH present | **6–17%**: oversized, and it does not shrink with T | E6, E10 |
 | the same, SARIMAX `cov_type="robust"` | | 3–11% from T = 120 (4–15% at 60) | E10 |
 | the same, one-stage GARCH fit (robust) | | 4–10% from T = 120 (7–17% at 60) | E10 |
@@ -155,6 +170,49 @@ section 1.
 | Wald test of an AR/MA coefficient at T = 60, without GARCH | its true value | 6–15% for every method (small-sample ARMA) | E10 |
 | Wald test of α or β | α = 0 lies on the boundary | not valid: non-standard there (Andrews 2001). Wald CIs cover 0.5–0.7 at 5–10 years, so use `bootstrap()` | small-sample study |
 | Diebold–Mariano, one-step holdout | equal expected score | 5.4–6.5% at n ≤ 120, about 5% from 250 | E9 |
+
+**When a p-value is not valid: what to do instead**
+
+| problem | why the textbook p-value fails | what to do | in the package | evidence |
+|---|---|---|---|---|
+| testing "no GARCH" | α = 0 lies on the boundary and β is not identified there. The LR has no χ² law, and the χ²(2) cut-off is conservative (size 1–3%), which costs power. | **Restricted bootstrap of the LR:** fit under H0, resample its residuals, refit both models, and reject when p* ≤ α, choosing B so that α(B + 1) is a whole number (Cavaliere, Nielsen & Rahbek 2017). Or the LM test, whose χ² law holds because it is computed at the null (Lee 1991). | `garch_test(..., B=199)`, `compare(bootstrap_lr=199)`; `arch_lm_test` | E11: size 4.8% at T = 120, and 10–11 points more power than χ²(2) |
+| intervals for α, β or the persistence when α may be near 0 | Wald fails at the boundary, and so does the ordinary bootstrap of the estimator (Andrews 2000). | Test first (row above). Report intervals only when GARCH is clearly present (α̂ well above 0, T ≥ 240), using `bootstrap()`. Near the boundary, use subsampling or the m-out-of-n bootstrap (Andrews 2000), or invert the restricted-bootstrap test (not built). | `res.bootstrap()` | small-sample study: at T = 120–180 the bootstrap covers ω and β 0.85–0.95 and α 0.73–0.85, where Wald covers 0.5–0.7 |
+| AR/MA p-values at T ≈ 60 | the t-ratio is still far from normal (6–15% size) | a parametric bootstrap-t (the t-ratio is asymptotically pivotal at interior parameters), or profile-likelihood intervals | not built | E10 |
+| SARIMAX's default p-values under GARCH | `opg` ignores the GARCH (6–17% size) | the robust sandwich; no bootstrap is needed | `fit(cov_type="robust")` | E6, E10 |
+| p-values after choosing GARCH-or-not on the same data | the reported model was selected by the data | **Mean parameters:** nothing beyond robust SEs in every branch (below). **Quantities that exist only in the chosen model:** bootstrap the whole pipeline, or split the sample. | `compare()` | E11 (b) |
+
+**Post-selection: do we need the conditional distribution?** Not for the mean parameters. E11(b) measures it:
+the workflow selects GARCH when the LR test rejects, then reports that model's 95% intervals for the slope and
+the AR coefficient (1,000 series per cell).
+- **Unconditional coverage, with robust SEs in both branches, is 0.91–0.96.** That is the same as never
+  selecting: always SARIMAX with robust SEs covers 0.92–0.96, and always GARCH 0.92–0.96. The shortfall at
+  T = 120 is a small-sample effect, not a selection effect.
+- **Coverage conditional on the selection outcome is 0.91–0.95 given that GARCH was selected, and 0.91–0.96
+  given that SARIMAX was.** That conditional coverage is what selective inference requires: an answer "valid
+  given that the question was asked" (Fithian, Sun & Taylor).
+- **Why conditioning changes nothing here:** the selection statistic (the GARCH LR, built from squared residuals)
+  is asymptotically independent of the mean estimators. That is the block-diagonal information matrix of
+  Engle (1982) again, and conditioning on an event independent of an estimator leaves its distribution
+  unchanged.
+- **The shortfall that looks like a selection effect is the `opg` problem.** With SARIMAX's default `opg` SEs in
+  the SARIMAX branch, the AR coefficient covers only 0.91–0.93 when GARCH is present but missed. Robust SEs fix
+  it.
+
+**When selection does matter.** It matters for α, β, the persistence and the GARCH band width, which exist only
+in the chosen model. It also matters when the independence fails, as with skewed shocks (E3) or leverage (E4).
+The options then:
+- **Bootstrap the whole pipeline:** rerun the selection and the estimation on every bootstrap series. That is
+  valid for the procedure as a whole, unconditionally (Efron 2014's bootstrap smoothing).
+- **Split the sample in time:** choose the model on the first part and test on the rest. That is valid
+  conditionally, at the cost of power.
+- **Exact selective inference**, the conditional law given the selection event, exists only for Gaussian linear
+  models with polyhedral selection events (Lee, Sun, Sun & Taylor 2016). A likelihood-ratio pre-test on a
+  nonlinear MLE has no closed form. A Monte Carlo version keeps only the bootstrap draws that reproduce the same
+  selection.
+- **Simultaneous intervals over the small set of candidate models** (PoSI: Berk et al. 2013) are valid for any
+  selection rule, but conservative.
+
+Leeb & Pötscher (2005) show why the naive bootstrap of a post-selection estimator can't be trusted uniformly.
 
 **Other things to check before trusting GARCH:**
 - **Outliers.** A few additive outliers make the ARCH-LM test reject homoskedasticity when it is true; apparent
@@ -383,6 +441,8 @@ belongs to the in-sample LR test.
 - **E8:** the holdout log-likelihood against CRPS (`e8_holdout_logscore.py`).
 - **E9:** the Diebold–Mariano statistic's null distribution, exact and nested (`e9_dm_null.py`).
 - **E10:** sample size by model type (ARIMA(1,1,1), regression with ARIMA errors, airline), one stage vs two, and p-value sizes (`e10_sample_size.py`).
+- **E11:** valid inference when the textbook p-values fail: the restricted bootstrap for the GARCH test, and post-selection coverage of the mean (`e11_valid_inference.py`).
+- **E12:** where the low power comes from, with the same GARCH shocks behind eight mean models and an oracle (`e12_power_source.py`).
 
 **Earlier studies**, in `../verification/README.md`:
 - 1:1 checks against rugarch, statsmodels and arch;
@@ -397,10 +457,15 @@ belongs to the in-sample LR test.
 - Demos & Sentana (1998), *Journal of Econometrics* 86(1), 97–127 — one-sided tests for GARCH; boundary mixtures.
 - Engle (1982), *Econometrica* 50(4), 987–1007 — ARCH-LM; ML vs least squares under ARCH.
 - Amisano & Giacomini (2007), *JBES* 25(2), 177–190 — comparing density forecasts by weighted likelihood ratio tests.
+- Andrews (2000), *Econometrica* 68(2), 399–405 — the bootstrap is inconsistent when a parameter is on the boundary.
+- Berk, Brown, Buja, Zhang & Zhao (2013), *Annals of Statistics* 41(2), 802–837 — valid post-selection inference (PoSI).
+- Cavaliere, Nielsen & Rahbek (2017), *Journal of Time Series Analysis* 38(4), 513–534 — the restricted bootstrap is consistent for testing no ARCH.
 - Clark & McCracken (2001), *Journal of Econometrics* 105(1), 85–110 — equal-accuracy tests for nested models.
 - Diebold (2015), *JBES* 33(1), doi:10.1080/07350015.2014.983236 — Diebold–Mariano tests compare forecasts, not models.
 - Diebold & Mariano (1995), *Journal of Business & Economic Statistics* 13(3), 253–263 — comparing predictive accuracy.
+- Efron (2014), *JASA* — estimation and accuracy after model selection (bootstrap smoothing).
 - Engle & Ng (1993), *Journal of Finance* 48(5), 1749–1778 — sign-bias tests.
+- Fithian, Sun & Taylor, "Optimal inference after model selection", arXiv:1410.2597 — selective inference.
 - Francq & Zakoian (2004), *Bernoulli* 10(4), 605–637 — QMLE of ARMA-GARCH.
 - Francq, Roy & Zakoian (2005), *JASA* 100(470), 532–544 — ARMA diagnostics with uncorrelated, dependent errors.
 - Giacomini & White (2006), *Econometrica* 74(6), 1545–1578 — tests of (conditional) predictive ability for estimated, possibly nested models.
@@ -409,6 +474,8 @@ belongs to the in-sample LR test.
 - Glosten, Jagannathan & Runkle (1993), *Journal of Finance* 48(5), 1779–1801 — GJR asymmetric GARCH.
 - Hughes, King & Kwek (2004), *Economics Letters* 83(2), 269–275 — information criteria for ARCH.
 - Lamoureux & Lastrapes (1990), *JBES* 8, 225–235 — structural change and spurious persistence in GARCH.
+- Lee, Sun, Sun & Taylor (2016), *Annals of Statistics* 44(3), 907–927 — exact post-selection inference (polyhedral lemma).
+- Leeb & Pötscher (2005), *Econometric Theory* 21, 21–59 — model selection and inference: facts and fiction.
 - Lee (1991), *Economics Letters* 37(3), 265–271 — the LM test for GARCH.
 - Ma, Nelson & Startz (2007), *Studies in Nonlinear Dynamics & Econometrics* 11(1) — weak identification in GARCH(1,1).
 - Newey & Steigerwald (1997), *Econometrica* 65(3), 587–599 — non-Gaussian QMLE under asymmetry.

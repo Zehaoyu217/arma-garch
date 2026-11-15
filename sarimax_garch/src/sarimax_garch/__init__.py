@@ -14,9 +14,9 @@
     print(cmp.summary()); cmp.recommendation
 """
 from ._core import arch_lm_test, ljung_box
-from .compare import CompareResults, compare, dm_test, holdout_logscore, sign_bias_test
+from .compare import CompareResults, compare, dm_test, garch_test, holdout_logscore, sign_bias_test
 from .model import GARCHPredictionResults, SARIMAXGARCH, SARIMAXGARCHResults
 
 __version__ = "0.3.0"
 __all__ = ["SARIMAXGARCH", "SARIMAXGARCHResults", "GARCHPredictionResults", "arch_lm_test", "ljung_box",
-           "compare", "CompareResults", "sign_bias_test", "holdout_logscore", "dm_test"]
+           "compare", "CompareResults", "sign_bias_test", "holdout_logscore", "dm_test", "garch_test"]

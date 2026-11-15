@@ -8,7 +8,8 @@ printed by `report.py` from `out/*.json`.
 cd verification/limitations
 python3 e1_backends.py && python3 e2_bands.py && python3 e3_skew.py && python3 e4_leverage.py \
   && python3 e5_converged.py && python3 e6_sarimax_vs_garch.py && python3 e8_holdout_logscore.py \
-  && python3 e9_dm_null.py && python3 e10_sample_size.py && python3 report.py   # about 13 minutes on 12 cores
+  && python3 e9_dm_null.py && python3 e10_sample_size.py && python3 e11_valid_inference.py \
+  && python3 e11_size_check.py && python3 e12_power_source.py && python3 report.py   # about 50 minutes on 12 cores
 python3 e7_arch_mamean.py      # needs a Python with arch >= 9.0 (not a package dependency)
 ```
 The results of E1–E5 are identical to the last digit (all 2,267 numbers in `out/`) on Python 3.9.6 and 3.11.15,
@@ -404,6 +405,95 @@ Findings:
     GARCH fit, from T = 120.
   - The slope and intercept tests are 1–8% with any method.
   - At T = 60, the AR/MA tests are 6–15% for every method even without GARCH: small-sample ARMA.
+
+### E11 — valid inference when the textbook p-values fail (`e11_valid_inference.py`, `e11_size_check.py`)
+
+**(a) Testing "no GARCH".** Under the null, α = 0 is on the boundary and β is not identified, so the LR test has
+no χ² law. `garch_test` uses the restricted bootstrap (Cavaliere, Nielsen & Rahbek 2017):
+- fit the model under H0;
+- resample its standardized residuals;
+- refit both models to each bootstrap series;
+- reject when p* ≤ α, with α(B+1) a whole number (here B = 99).
+
+Share rejecting at 5%:
+
+| truth | T | χ²(2) LR | restricted bootstrap LR | ARCH-LM(4) |
+|---|---|---|---|---|
+| no GARCH (size) | 120 | 1.4% | **4.8%** | — |
+| | 250 | 2.3% | 3.0% | 3.7% |
+| typical GARCH | 120 / 250 | 25% / 52% | 36% / 57% | 20% / 41% |
+| persistent GARCH | 120 / 250 | 34% / 75% | 46% / 79% | 21% / 50% |
+| MA θ .9, no GARCH (size) | 250 / 1000 | 7.7% / 4.7% | 6.0% / 3.3% | 4.3% / 7.3% |
+
+The T = 120 size row comes from 1,000 fresh series.
+
+- **The restricted bootstrap is correctly sized.** Its null LR distribution matches the true one: 95% points 4.50
+  and 4.49, KS p = 0.96.
+- **It gains power from the right critical value,** not from over-rejecting: 10–11 points at T = 120 and 4–5 at
+  T = 250 over the conservative χ²(2) cut-off.
+- **It also mostly corrects the near-unit-root MA over-rejection,** from 7.7% to 6.0% at T = 250.
+- **Two lessons from building it:**
+  - A bootstrap must repeat the original procedure exactly, including optimizer starts. Refits that started
+    from the original estimates were too small.
+  - A size check that reuses the same 300 series for every variant can mislead. Those series showed 8.7% for
+    the bootstrap and 2.7% for χ²(2), and were simply unrepresentative.
+
+**(b) Post-selection inference for the mean.** The workflow selects GARCH when the LR test rejects, then
+reports that model's 95% intervals for the slope and AR coefficient (1,000 series per cell; tables from
+`report.py`):
+- **Unconditional coverage, reporting robust SEs in both branches: 0.91–0.96.** This equals never selecting:
+  always SARIMAX with robust SEs covers 0.92–0.96, and always GARCH 0.92–0.96.
+- **Conditional on the selection outcome**, which is what selective inference asks for: 0.91–0.95 given that
+  GARCH was selected, and 0.91–0.96 given that SARIMAX was selected. The exceptions are the no-GARCH cells,
+  where only 20–30 series select GARCH.
+- **The one shortfall is not caused by selection.** With SARIMAX's default `opg` SEs in the SARIMAX branch, the
+  AR coefficient covers 0.91–0.93 when GARCH is present but missed. That is the `opg` problem, and robust SEs
+  fix it.
+- **Why selection does not distort the mean:**
+  - The selection statistic, the GARCH LR, is built from squared residuals.
+  - It is asymptotically independent of the mean estimators: the information matrix is block-diagonal
+    (Engle 1982).
+  - Conditioning on an event independent of an estimator leaves the estimator's distribution unchanged.
+  - Selection does matter for quantities that exist in only one model (α, β, the persistence), and wherever
+    that independence fails: skewed shocks (E3) and leverage (E4).
+
+### E12 — is the low power due to GARCH or to the SARIMAX in front of it? (9 cells, 500 series each)
+
+**Design:**
+- **One set of shocks for every model:** each GARCH(1,1) shock series drives eight mean models, so the
+  comparison is paired.
+- **The eight models:**
+  - an oracle that sees the true shocks;
+  - a constant mean;
+  - OLS on an exogenous regressor;
+  - AR(1);
+  - ARMA(1,1);
+  - MA(1) with θ .9;
+  - ARIMA(1,1,1);
+  - the airline model, fitted in two stages only.
+- **GARCH:** none (to measure size), typical or persistent; T = 120, 240 and 480.
+- `report.py` prints every test.
+
+LR test (one-stage; two-stage for the airline model), share choosing GARCH at 5%:
+
+| truth | T | oracle | mean / OLS / AR(1) / ARMA(1,1) / ARIMA(1,1,1) | airline (two-stage) | MA(1) θ .9 (one-stage) |
+|---|---|---|---|---|---|
+| typical GARCH | 120 / 240 / 480 | 0.24 / 0.48 / 0.81 | 0.23–0.25 / 0.44–0.48 / 0.79–0.80 | 0.17 / 0.41 / 0.75 | 0.27 / 0.53 / 0.81 |
+| persistent GARCH | 120 / 240 / 480 | 0.39 / 0.72 / 0.96 | 0.37–0.39 / 0.72–0.73 / 0.96 | 0.28 / 0.67 / 0.94 | 0.40 / 0.75 / 0.96 |
+| no GARCH (size) | 120 / 240 / 480 | 0.01 / 0.03 / 0.05 | 0.01–0.02 / 0.02–0.03 / 0.04–0.05 | 0.01 / 0.02 / 0.04 | **0.05 / 0.06 / 0.10** |
+
+- **The low power is GARCH's own.** With the shocks known exactly, typical monthly GARCH is found 24% of the
+  time at T = 120 and 48% at 240.
+  - The whole signal is a lag-1 autocorrelation in the squared shocks: 0.13 for typical GARCH and 0.21 for
+    persistent GARCH, decaying at the rate α + β.
+  - Squared shocks are heavy-tailed, which makes that autocorrelation noisy to estimate.
+- **The mean model costs little.** OLS, AR, ARMA and ARIMA means cost 0–4 points of power.
+- **Seasonal MA estimation costs the most in short samples.** The airline model, fitted in two stages, loses
+  7–11 points at T = 120 and 1–7 from 240.
+- **A near-unit-root MA costs no power but breaks the one-stage test's size,** which rises to 10% at T = 480.
+  The two-stage LR on the Kalman-standardized residuals (1–5%) and ARCH-LM (2–4%) are fine on the same series.
+- **The test matters more than the mean model.** ARCH-LM(4) has 3–25 points less power than the LR test, and
+  ARCH-LM(12) less again at T = 120 (0.13 against 0.24 for typical GARCH).
 
 ## Literature: what is known, what is new
 

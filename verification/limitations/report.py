@@ -158,7 +158,43 @@ def e10():
                       f"{(f2(pr, 'OS') + ' · ' + f2(pr, 'TS')) if pr else '–'} | {ws} |")
 
 
+def e11():
+    d = load("e11_valid_inference")
+    s = load("e11_size_check")
+    print("(a) Rejection rate at 5% (GARCH none = size); the restricted bootstrap rejects when p* <= 0.05 (B = 99)\n")
+    print("| design | chi2(2) LR | restricted bootstrap LR | ARCH-LM(4) | series |")
+    print("|---|---|---|---|---|")
+    for k, v in d["a"].items():
+        print(f"| {k.replace(' | ', ', ')} | {v['chi2']:.3f} | {v['boot']:.3f} | {v['lm']:.3f} | {v['R']} |")
+    print(f"\nFresh-seed size check (AR1, no GARCH, T = 120, {s['n']} series): restricted bootstrap {s['boot_size']:.3f}, "
+          f"chi2(2) {s['chi2_size']:.3f}; LR null distribution true DGP vs bootstrap DGP: q95 {s['q95'][0]:.2f} / "
+          f"{s['q95'][1]:.2f}, KS p {s['ks_p']:.2f}")
+    print("\n(b) 95% interval coverage for x1 / ar.L1 after selecting GARCH-or-not by the LR test\n")
+    print("| design | GARCH selected | always SARIMAX opg | always SARIMAX robust | always GARCH | select, then defaults | "
+          "select, then robust | select-then-robust given GARCH / given SARIMAX |")
+    print("|---|---|---|---|---|---|---|---|")
+    for k, v in d["b"].items():
+        c, cc = v["coverage"], v["conditional"]["post_robust"]
+        f = lambda dd: "/".join("–" if x is None else f"{x:.3f}" for x in dd.values())
+        print(f"| {k.replace(' | ', ', ')} | {v['share_garch_selected']:.2f} | {f(c['sm_opg'])} | {f(c['sm_rob'])} | "
+              f"{f(c['garch'])} | {f(c['post_default'])} | {f(c['post_robust'])} | "
+              f"{f(cc['given GARCH selected'])} · {f(cc['given SARIMAX selected'])} |")
+
+
+def e12():
+    d = load("e12_power_source")
+    models = ["oracle", "mean", "OLS", "AR(1)", "ARMA(1,1)", "MA(1) .9", "ARIMA(1,1,1)", "airline"]
+    for test in ("LR one-stage", "LR two-stage", "ARCH-LM(4)", "ARCH-LM(12)"):
+        print(f"\n**{test}** — share rejecting at 5% (GARCH none = size)\n")
+        print("| design | " + " | ".join(models) + " |")
+        print("|---|" + "---|" * len(models))
+        for key, v in d.items():
+            print(f"| {key.replace(' | ', ', ')} | " + " | ".join(f"{v[m][test]:.2f}" if test in v[m] else "–"
+                                                         for m in models) + " |")
+
+
 if __name__ == "__main__":
-    for name, fn in (("E1", e1), ("E2", e2), ("E3", e3), ("E4", e4), ("E5", e5), ("E6", e6), ("E8", e8), ("E10", e10)):
+    for name, fn in (("E1", e1), ("E2", e2), ("E3", e3), ("E4", e4), ("E5", e5), ("E6", e6), ("E8", e8), ("E10", e10),
+                     ("E11", e11), ("E12", e12)):
         print(f"\n### {name}\n")
         fn()

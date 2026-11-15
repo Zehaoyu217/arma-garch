@@ -35,6 +35,10 @@ score. `holdout=0.2` adds the prequential one-step **holdout log-likelihood** of
 Diebold–Mariano tests; this is the metric of microprediction's `skaters`, and unlike in-sample llf or AIC it is
 valid across backends, d and distributions. Standalone versions: `holdout_logscore()` and `dm_test()`.
 `fc.logpdf(actual)` scores any GARCH forecast: it is exact at h = 1, and an exact path mixture beyond.
+
+`garch_test()` tests "no GARCH" with a restricted-bootstrap p-value. The χ²(2) cut-off is conservative there,
+because α = 0 is on the boundary. The bootstrap test is correctly sized, at 4.8% at T = 120, and has 10–11 points
+more power. `compare(bootstrap_lr=199)` uses it to decide.
 [`GUIDE.md`](GUIDE.md) explains when GARCH gains an edge over plain SARIMAX (regime-correct intervals,
 volatility forecasts, more precise mean estimates, valid AR/MA SEs) and when it does not (point forecasts,
 long horizons, short samples), how MA terms work with GARCH, and what each wrong choice costs — all measured.

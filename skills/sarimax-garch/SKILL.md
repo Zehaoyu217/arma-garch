@@ -95,6 +95,9 @@ stat, p = arch_lm_test(res0.resid.iloc[res0.loglikelihood_burn:], lags=12)   # A
   with limitation codes L1–L15 and fallbacks (workflow and evidence: `sarimax_garch/GUIDE.md`).
   - It runs ARCH-LM, then decides with the LR test of GARCH vs α = β = 0 inside the engine. It uses ARCH-LM
     instead when an MA root is near 1.
+  - In short samples, pass `bootstrap_lr=199`, or call `garch_test(...)`, for the restricted-bootstrap
+    p-value. It is correctly sized at the α = 0 boundary, where χ²(2) is conservative, and has 10–11 points more
+    power at T = 120.
   - It also runs a sign-bias (leverage) test and the t-vs-normal intercept check.
   - Fitting GARCH where there is none costs little: RMSE within +4% and CRPS at most +0.3%. But α or β lands
     on the boundary in 64–87% of such fits.

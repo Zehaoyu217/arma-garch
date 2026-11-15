@@ -19,7 +19,87 @@ from scipy import stats
 from . import _core
 from .model import SARIMAXGARCH
 
-__all__ = ["compare", "CompareResults", "sign_bias_test", "holdout_logscore", "dm_test"]
+__all__ = ["compare", "CompareResults", "sign_bias_test", "holdout_logscore", "dm_test", "garch_test"]
+
+
+def _simulate_null(r0, Z):
+    """Series (rows of Z) from a fitted constant-variance engine model r0 (alpha = beta = 0), on its differenced
+    scale, with standardised shocks Z (n_boot, n + burn): u_t = c + sum phi u + sum theta e + e_t, e = sigma z;
+    y = X gamma + u (regression form).  Returns (n_boot, n)."""
+    p, q, dist, X = r0.p, r0.q, r0.dist, r0.X
+    k = 0 if X is None else X.shape[1]
+    c, phi, th, gamma, omega, _, _, _ = _core._unpack(r0.params, p, q, k, dist)
+    n = len(r0.y)
+    burn = Z.shape[1] - n
+    e = np.sqrt(omega) * Z
+    u = np.zeros_like(Z)
+    for t in range(Z.shape[1]):
+        m = c
+        for i in range(p):
+            if t - 1 - i >= 0:
+                m = m + phi[i] * u[:, t - 1 - i]
+        for j in range(q):
+            if t - 1 - j >= 0:
+                m = m + th[j] * e[:, t - 1 - j]
+        u[:, t] = m + e[:, t]
+    y = u[:, burn:]
+    if k and r0.xreg == "regression":
+        y = y + X @ gamma
+    return y
+
+
+def garch_test(endog, exog=None, order=(1, 0, 0), trend="c", dist="normal", B=199, method="residual", seed=None,
+               burn=200):
+    """Test H0: no GARCH (alpha = beta = 0) by the likelihood ratio, with a RESTRICTED bootstrap p-value.
+
+    Under H0, alpha = 0 lies on the boundary and beta is not identified, so the LR statistic has no chi2 law
+    (the chi2(2) cut-off is conservative, E6/E10).  The restricted bootstrap draws B series from the model
+    fitted UNDER THE NULL (constant variance; shocks resampled from its standardised residuals, or normal / t),
+    refits both models to each, and compares the observed LR with the B bootstrap LRs:
+        p = (1 + #{LR*_b >= LR}) / (B + 1).
+    Cavaliere, Nielsen & Rahbek (2017, JTSA) prove this restricted bootstrap consistent for testing no ARCH; the
+    unrestricted bootstrap is not (Andrews 2000).  It also carries the conditional likelihood's start-up
+    effects (e.g. near-unit-root MA) into the null distribution.
+    Rejection rule (a Monte Carlo test): reject at level a when p_bootstrap <= a, with B chosen so that a (B + 1)
+    is an integer -- B = 99, 199 or 499 for a = 0.05 -- which makes the level exactly a.
+    Returns dict(lr, p_bootstrap, p_chi2, B, lr_boot)."""
+    p, d, q = (int(v) for v in order)
+    kw = dict(exog=exog, order=order, trend=trend, garch=(1, 1), dist=dist)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        np.seterr(all="ignore")
+        mod = SARIMAXGARCH(endog, **kw)
+        null = mod.fit(fixed_params={"alpha.L1": 0.0, "beta.L1": 0.0})
+        alt = mod.fit()
+        lr = max(0.0, 2 * (alt.llf - null.llf))
+        r0, r1 = null._res, alt._res
+        rng = np.random.default_rng(seed)
+        n = len(r0.y)
+        if method == "residual":
+            z = r0.std_resid
+            z = (z - z.mean()) / z.std()
+            Z = z[rng.integers(0, len(z), size=(B, n + burn))]
+        elif dist == "t":
+            nu = r0["nu"]
+            Z = rng.standard_t(nu, size=(B, n + burn)) * np.sqrt((nu - 2) / nu)
+        else:
+            Z = rng.standard_normal(size=(B, n + burn))
+        Ys = _simulate_null(r0, Z)
+        fixed0 = {**r0.fixed, "alpha": 0.0, "beta": 0.0}
+        fixed1 = {k: v for k, v in r1.fixed.items() if k not in ("alpha", "beta")}
+        lr_b = []
+        for yb in Ys:
+            try:
+                f0 = _core.fit_joint(yb, X=r0.X, p=p, q=q, d=0, dist=dist, start=None, compute_cov=False,
+                                     init=r0.init, xreg=r0.xreg, fixed=fixed0)
+                f1 = _core.fit_joint(yb, X=r0.X, p=p, q=q, d=0, dist=dist, start=None, compute_cov=False,
+                                     init=r1.init, xreg=r1.xreg, fixed=fixed1)
+                lr_b.append(max(0.0, 2 * (f1.loglik - f0.loglik)))
+            except (ValueError, FloatingPointError, np.linalg.LinAlgError):
+                pass
+    lr_b = np.asarray(lr_b)
+    return dict(lr=float(lr), p_bootstrap=float((1 + np.sum(lr_b >= lr)) / (len(lr_b) + 1)),
+                p_chi2=float(stats.chi2.sf(lr, 2)), B=int(len(lr_b)), lr_boot=lr_b)
 
 
 def _split(obj, n_train):
@@ -142,7 +222,7 @@ class CompareResults:
 
 
 def compare(endog, exog=None, order=(1, 0, 0), trend="c", dists=("normal", "t"), arch_lags=(4, 12), alpha=0.05,
-            backtest=None, holdout=None):
+            backtest=None, holdout=None, bootstrap_lr=None):
     """Fit and compare, on the same data:
         SARIMAX                 statsmodels (exact likelihood, all T observations) -- the reference model
         engine, const. variance garch=(1,1) with alpha = beta = 0 fixed            -- the null for GARCH
@@ -154,6 +234,8 @@ def compare(endog, exog=None, order=(1, 0, 0), trend="c", dists=("normal", "t"),
     holdout: None, or the number (int) / share (float < 1) of final observations for the prequential one-step
     holdout log-likelihood of each model (holdout_logscore, parameters fitted on the rest), with
     Diebold-Mariano tests -- the out-of-sample comparison that is valid across backends.
+    bootstrap_lr: None, or B (e.g. 199): decide GARCH-vs-not by the restricted-bootstrap p-value of the LR test
+    (garch_test; exact size at the boundary, E11) instead of the conservative chi2(2) cut-off.
     seasonal_order is not supported (GARCH or seasonal: pick one, L1) -- put seasonality in exog.
     Returns CompareResults; print(res.summary())."""
     p, d, q = (int(v) for v in order)
@@ -300,7 +382,16 @@ def compare(endog, exog=None, order=(1, 0, 0), trend="c", dists=("normal", "t"),
                            "residuals instead (done here)"))
     decide_p = lm_p[0] if near_ma else lr[ref]
     decide_by = f"ARCH-LM({arch_lags[0]})" if near_ma else "LR within the engine"
-    arch_signal = decide_p < alpha
+    boot_rule = False
+    if bootstrap_lr:
+        boot_rule = True
+        gt = garch_test(endog, exog=exog, order=order, trend=trend, dist=ref, B=int(bootstrap_lr), seed=0)
+        decide_p, decide_by = gt["p_bootstrap"], f"restricted-bootstrap LR (B = {gt['B']})"
+        tests = pd.concat([tests, pd.DataFrame([dict(test=f"LR GARCH vs constant ({ref}), restricted bootstrap",
+                                                     stat=gt["lr"], df=np.nan, p_value=gt["p_bootstrap"],
+                                                     note="valid at the boundary (Cavaliere, Nielsen & Rahbek 2017)")]
+                                                   ).set_index("test")])
+    arch_signal = decide_p <= alpha if boot_rule else decide_p < alpha   # Monte Carlo p-values: reject when p <= alpha
     caveats = []
     if nobs < 100:
         model, reason = "SARIMAX", f"{nobs} observations are too few for GARCH (L3)"
