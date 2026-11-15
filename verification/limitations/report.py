@@ -135,7 +135,30 @@ def e8():
               f"{v['d_logscore_t']:+.4f} · {v['crps_ratio_t']:.4f} |")
 
 
+def e10():
+    d = load("e10_sample_size")
+    for fam in ("ARIMA(1,1,1)", "reg + ARIMA(1,1,1)", "airline"):
+        names = list(d[f"{fam} | GARCH none | T=60"]["wald_size"]["SM opg"])
+        print(f"\n**{fam}** — detection = share choosing GARCH (5%); boundary = GARCH fit with alpha or beta ~ 0; QLIKE = "
+              f"one-step variance-forecast loss GARCH / constant; Wald size at the true {', '.join(names)}: "
+              "SM opg · SM robust · OS robust\n")
+        print("| GARCH | T | ARCH-LM(12) | LR one-stage | LR two-stage | boundary OS · TS | QLIKE OS · TS | "
+              "persistence RMSE OS · TS | Wald size |")
+        print("|---|---|---|---|---|---|---|---|---|")
+        for g in ("none", "typical", "persistent"):
+            for T in (60, 120, 240, 360, 600):
+                v = d[f"{fam} | GARCH {g} | T={T}"]
+                f2 = lambda dd, k: f"{dd[k]:.2f}" if k in dd else "–"
+                ws = " · ".join("/".join(f"{x:.2f}" for x in v["wald_size"][k].values())
+                                for k in ("SM opg", "SM robust", "OS robust") if k in v["wald_size"])
+                pr = v["persistence_rmse"]
+                print(f"| {g} | {T} | {f2(v['detection'], 'ARCH-LM(12)')} | {f2(v['detection'], 'LR one-stage')} | "
+                      f"{f2(v['detection'], 'LR two-stage')} | {f2(v['boundary'], 'OS')} · {f2(v['boundary'], 'TS')} | "
+                      f"{f2(v['qlike_ratio'], 'OS')} · {f2(v['qlike_ratio'], 'TS')} | "
+                      f"{(f2(pr, 'OS') + ' · ' + f2(pr, 'TS')) if pr else '–'} | {ws} |")
+
+
 if __name__ == "__main__":
-    for name, fn in (("E1", e1), ("E2", e2), ("E3", e3), ("E4", e4), ("E5", e5), ("E6", e6), ("E8", e8)):
+    for name, fn in (("E1", e1), ("E2", e2), ("E3", e3), ("E4", e4), ("E5", e5), ("E6", e6), ("E8", e8), ("E10", e10)):
         print(f"\n### {name}\n")
         fn()

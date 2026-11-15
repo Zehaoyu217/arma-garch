@@ -73,7 +73,103 @@ ma_garch.params["ma.L1"], ma_garch.maroots, ma_garch.invertible
 - **Over-differencing:** an MA root on the unit circle usually means d is one too high.
 - **Cancelling roots:** AR and MA roots that nearly cancel mean the orders are too high. `summary()` and `compare()` flag both.
 
-## 4. The compare workflow
+## 4. How many observations, one stage or two, and are the p-values right?
+
+**E10 design** (400 series per cell, normal shocks; full tables from `report.py`):
+- **Three SARIMAX types:**
+  - ARIMA(1,1,1) with drift;
+  - regression with ARIMA(1,1,1) errors and a random-walk regressor;
+  - the airline model SARIMA(0,1,1)(0,1,1)₁₂, with θ = −0.4 and Θ = −0.6.
+- **GARCH:** none, typical monthly (α .10, β .75) or persistent (α .08, β .90).
+- **Sample sizes:** T = 60 to 600.
+
+**The model type barely matters; T and the strength of the ARCH effect decide.** The table gives ranges
+across the three types:
+
+| T (years of monthly data) | LR test finds GARCH: typical / persistent | GARCH fit on a boundary | one-step variance-forecast loss, GARCH / constant (< 1: GARCH better): typical / persistent |
+|---|---|---|---|
+| 60 (5) | 4–8% / 4–8% | 74–86% | 1.0–1.7 / 0.7–1.1 |
+| 120 (10) | 19–26% / 28–34% | 47–59% | 0.8–1.0 / 0.34–0.47 |
+| 240 (20) | 43–54% / 69–74% | 16–21% | 0.40–0.56 / 0.17–0.23 |
+| 360 (30) | 65–68% / 88–90% | 4–11% | 0.31–0.40 / 0.10–0.13 |
+| 600 (50) | 86–89% / 97–99% | 1–4% | 0.17–0.22 / 0.05–0.06 |
+
+The loss is QLIKE against the true σ²_{T+1}. Fitting GARCH where there is none makes the variance forecast
+1.8–2.8 times worse.
+
+Rules of thumb:
+- **Below ~100 observations: do not fit GARCH.** It is found in at most 8% of the samples where it exists, the
+  fit sits on a boundary three times in four, and its variance forecast is no better than a constant (loss
+  ratio 0.7–1.7).
+- **Around 120 observations (10 years monthly): fit it only when the LR test rejects.** Expect a boundary fit
+  about half the time, a variance-forecast gain of 0–22% for typical ARCH and about 60% for persistent ARCH,
+  and report `bootstrap()` CIs.
+- **From about 240 observations (20 years) GARCH is usually identifiable.** It roughly halves the
+  variance-forecast loss for typical ARCH and cuts it by about 80% for persistent ARCH.
+- **The persistence α + β stays imprecise.** Its RMSE is 0.13–0.20 for typical monthly GARCH, and still
+  0.13–0.15 at 600 observations, so do not over-read half-lives.
+
+**One stage or two?**
+- **Non-seasonal SARIMAX, any (p, d, q), with or without X:** the package estimates the mean and GARCH together
+  in one likelihood. The only two-stage element is the ARCH-LM pre-test on the SARIMAX residuals.
+- **Seasonal ARMA, such as the airline model:** joint fitting is not available (L1), but two stages work. Fit
+  the seasonal SARIMAX, then a zero-mean GARCH(1,1) on its standardized residuals. In E10 it detects GARCH as
+  often as one-stage fitting (0–3 points lower), with the same boundary rate and persistence accuracy.
+  - At T ≤ 120 its variance forecasts are better: the loss is 6–26% lower than one-stage's (0.78 against 0.93
+    for typical GARCH on ARIMA(1,1,1) at T = 120), because it estimates fewer parameters at once. From
+    T = 240 the two are equal.
+- **Why that is safe:** with symmetric shocks and a symmetric variance equation, the information matrix is
+  block-diagonal between the mean and variance parameters (Engle 1982, Theorem 4). So estimating the variance
+  from consistent residuals loses nothing asymptotically.
+- **What two stages give up:** the mean loses the efficiency gain of joint estimation (E6: −3% to −17% in slope
+  RMSE), so its SEs must be robust. Under leverage, though, the two-stage mean is the safer one (E4).
+
+```python
+import numpy as np
+import pandas as pd
+
+sm2 = SARIMAXGARCH(y, order=(0, 1, 1), seasonal_order=(0, 1, 1, 12)).fit(cov_type="robust")   # stage 1: airline
+burn = sm2.loglikelihood_burn                                       # d + D*s diffuse start-up observations
+resid = sm2.standardized_forecasts_error[0, burn:] * np.sqrt(sm2.params["sigma2"])   # Kalman-standardized
+r = pd.Series(resid, index=y.index[burn:])
+stage2 = SARIMAXGARCH(r, order=(0, 0, 0), trend=None, garch=(1, 1))   # stage 2: zero-mean GARCH(1,1)
+g2, g2_null = stage2.fit(), stage2.fit(fixed_params={"alpha.L1": 0.0, "beta.L1": 0.0})
+lr2 = 2 * (g2.llf - g2_null.llf)                                    # > 5.99 -> GARCH in the residuals
+var_next = g2.get_forecast(1).conditional_variance                   # next period's innovation variance
+```
+
+Multi-step two-stage bands are not built. They would combine SARIMAX's ψ-weights
+(`sm2.impulse_responses(h - 1)`) with `g2.get_forecast(h).conditional_variance`, using the variance formula of
+section 1.
+
+**Are the p-values the right size under the null?**
+
+| p-value | its null | rejection rate at nominal 5% | evidence |
+|---|---|---|---|
+| ARCH-LM(12) on SARIMAX's residuals | no ARCH | 0–5% (conservative at T ≤ 120) | E10 |
+| LR test, GARCH vs constant variance, one stage / two stages | no GARCH | 1–5% / 0–4% | E6, E10 |
+| Wald test of an AR/MA coefficient, SARIMAX's default `opg` | its true value, GARCH present | **6–17%**: oversized, and it does not shrink with T | E6, E10 |
+| the same, SARIMAX `cov_type="robust"` | | 3–11% from T = 120 (4–15% at 60) | E10 |
+| the same, one-stage GARCH fit (robust) | | 4–10% from T = 120 (7–17% at 60) | E10 |
+| Wald test of the slope or intercept, any of the three | its true value | 1–8% with `opg`; robust and one-stage similar from T = 120 | E10 |
+| Wald test of an AR/MA coefficient at T = 60, without GARCH | its true value | 6–15% for every method (small-sample ARMA) | E10 |
+| Wald test of α or β | α = 0 lies on the boundary | not valid: non-standard there (Andrews 2001). Wald CIs cover 0.5–0.7 at 5–10 years, so use `bootstrap()` | small-sample study |
+| Diebold–Mariano, one-step holdout | equal expected score | 5.4–6.5% at n ≤ 120, about 5% from 250 | E9 |
+
+**Other things to check before trusting GARCH:**
+- **Outliers.** A few additive outliers make the ARCH-LM test reject homoskedasticity when it is true; apparent
+  GARCH effects are sometimes just outliers (van Dijk, Franses & Lucas 1999). Re-test with dummies for known
+  shocks, such as 2020 in monthly macro data.
+- **Breaks.** A shift in the variance level looks like highly persistent GARCH (Lamoureux & Lastrapes 1990). If
+  α + β is near 1, fit the halves of the sample separately before believing it.
+- **Seasonal heteroskedasticity.** A month-specific variance is not GARCH, and GARCH(1,1) cannot represent it;
+  it shows up as ARCH at lag 12. Rescale the residuals by month before stage 2.
+- **Seasonal residuals.** For seasonal models use the Kalman-standardized residuals after `loglikelihood_burn`,
+  as above. The raw residuals include the diffuse start-up values, which look like a variance burst.
+- **Test choice.** ARCH-LM(12) has 10–20 points less power than the LR test (E10), and ARCH-LM(4) is closer
+  (E6). For GARCH(1,1) the LM test is the same as the ARCH(1) LM test (Lee 1991).
+
+## 5. The compare workflow
 
 One call runs steps 1–4, and step 6 if you pass `backtest=`:
 
@@ -241,7 +337,7 @@ With parameters frozen at the training fit, the null the test checks is "the est
 (Giacomini & White 2006). That is the forecasting question. The population question, "is there GARCH?",
 belongs to the in-sample LR test.
 
-## 5. What goes wrong when the choice is wrong
+## 6. What goes wrong when the choice is wrong
 
 | You fit | The truth | What it costs (measured) | How you notice | Fallback |
 |---|---|---|---|---|
@@ -254,11 +350,11 @@ belongs to the in-sample LR test.
 | any plug-in band | small T, persistent mean | simulated 90% band → 0.86 at h = 20 | `backtest()` coverage | widen; bootstrap intervals (not built) |
 | SARIMAX llf/AIC vs a GARCH fit | either | at unit scale, AIC picks GARCH for 45–55% of homoskedastic AR(1) series; on small-scale data the bias reverses | — | compare within the engine (`compare()`), or by the holdout log score, which is valid across backends (E8) |
 
-## 6. Limitations and fallbacks
+## 7. Limitations and fallbacks
 
 | Code | Limitation | Consequence | `compare()` flag | Fallback |
 |---|---|---|---|---|
-| L1 | no seasonal ARMA with GARCH | multiplicative SARIMA dynamics cannot carry GARCH | (`compare()` has no `seasonal_order`) | month dummies or Fourier terms in exog; SARIMAX when seasonality dominates and ARCH is weak |
+| L1 | no seasonal ARMA with GARCH | multiplicative SARIMA dynamics cannot carry GARCH in one stage | (`compare()` has no `seasonal_order`) | two stages: seasonal SARIMAX, then GARCH on its standardized residuals (section 4 recipe; E10: as good as one stage); or month dummies / Fourier terms in exog |
 | L2 | GARCH backend needs a gap-free series | NaN raises | — | SARIMAX (Kalman handles gaps) or impute |
 | L3 | GARCH weakly identified below ~250 observations | boundary fits; Wald CIs cover α/β only 0.5–0.7 at 5–10 years of monthly data | warn < 250, stop < 100 | `dist="normal"` + `bootstrap()`; keep SARIMAX below 100 |
 | L4 | the two backends' likelihoods differ (exact vs conditional) | biased GARCH choices across backends: towards GARCH at unit scale, against it below sd ≈ 0.25 | always shown | compare within the engine, or out of sample by the holdout log score (`compare(holdout=)`, `holdout_logscore`) or `backtest()` |
@@ -274,7 +370,7 @@ belongs to the in-sample LR test.
 | L14 | future exog taken as known | scenario risk missing from bands | — | one forecast per scenario |
 | L15 | residual diagnostics' p-values are approximate after GARCH (Li & Mak 1994; Francq, Roy & Zakoian 2005) | Ljung-Box / ARCH-LM on z indicative only | — | rely on `backtest()`; weighted tests (rugarch) for formal checks |
 
-## 7. Evidence and references
+## 8. Evidence and references
 
 **Experiments**, all in `../verification/limitations/`, reproducible with the listed scripts:
 - **E1:** backend likelihood gap and false GARCH choices.
@@ -286,6 +382,7 @@ belongs to the in-sample LR test.
 - **E7:** MA-GARCH against arch 9.0 (`e7_arch_mamean.py`, needs `pip install "arch>=9.0"`).
 - **E8:** the holdout log-likelihood against CRPS (`e8_holdout_logscore.py`).
 - **E9:** the Diebold–Mariano statistic's null distribution, exact and nested (`e9_dm_null.py`).
+- **E10:** sample size by model type (ARIMA(1,1,1), regression with ARIMA errors, airline), one stage vs two, and p-value sizes (`e10_sample_size.py`).
 
 **Earlier studies**, in `../verification/README.md`:
 - 1:1 checks against rugarch, statsmodels and arch;
@@ -311,10 +408,12 @@ belongs to the in-sample LR test.
 - Harvey, Leybourne & Newbold (1997), *International Journal of Forecasting* 13(2), 281–291 — the small-sample correction.
 - Glosten, Jagannathan & Runkle (1993), *Journal of Finance* 48(5), 1779–1801 — GJR asymmetric GARCH.
 - Hughes, King & Kwek (2004), *Economics Letters* 83(2), 269–275 — information criteria for ARCH.
+- Lamoureux & Lastrapes (1990), *JBES* 8, 225–235 — structural change and spurious persistence in GARCH.
 - Lee (1991), *Economics Letters* 37(3), 265–271 — the LM test for GARCH.
 - Ma, Nelson & Startz (2007), *Studies in Nonlinear Dynamics & Econometrics* 11(1) — weak identification in GARCH(1,1).
 - Newey & Steigerwald (1997), *Econometrica* 65(3), 587–599 — non-Gaussian QMLE under asymmetry.
 - Pascual, Romo & Ruiz (2006), *Computational Statistics & Data Analysis* 50(9), 2293–2312 — bootstrap prediction for GARCH.
 - Romano & Thombs (1996), *JASA* 91(434), 590–600 — autocorrelation inference under weak assumptions.
+- van Dijk, Franses & Lucas (1999), *Journal of Applied Econometrics* 14(5), 539–562 — additive outliers and spurious ARCH.
 - Weiss (1986), *Econometric Theory* 2(1), 107–131 — ARMA models with ARCH errors.
 - microprediction `skaters` (Cotton), https://github.com/microprediction/skaters — ranks forecasters by the prequential one-step holdout log-likelihood and reports CRPS alongside.

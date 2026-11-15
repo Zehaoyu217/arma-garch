@@ -8,7 +8,7 @@ printed by `report.py` from `out/*.json`.
 cd verification/limitations
 python3 e1_backends.py && python3 e2_bands.py && python3 e3_skew.py && python3 e4_leverage.py \
   && python3 e5_converged.py && python3 e6_sarimax_vs_garch.py && python3 e8_holdout_logscore.py \
-  && python3 e9_dm_null.py && python3 report.py               # about 10 minutes on 12 cores
+  && python3 e9_dm_null.py && python3 e10_sample_size.py && python3 report.py   # about 13 minutes on 12 cores
 python3 e7_arch_mamean.py      # needs a Python with arch >= 9.0 (not a package dependency)
 ```
 The results of E1–E5 are identical to the last digit (all 2,267 numbers in `out/`) on Python 3.9.6 and 3.11.15,
@@ -373,6 +373,38 @@ Clark & McCracken's (2001) nested-model result. As a test of "the estimated mode
 conservative and the wrong tool: use the in-sample LR or LM test (Diebold 2015: DM tests compare forecasts, not
 models).
 
+### E10 — sample size by model type, one stage vs two, p-value sizes (45 cells, 400 series each)
+
+**Design:**
+- **Model types:** ARIMA(1,1,1) with drift; regression with ARIMA(1,1,1) errors and a random-walk regressor;
+  the airline model SARIMA(0,1,1)(0,1,1)₁₂ (θ −0.4, Θ −0.6).
+- **GARCH:** none, typical monthly (α .10, β .75) or persistent (α .08, β .90).
+- **Sample sizes:** T = 60, 120, 240, 360 and 600.
+- **Fits:** SARIMAX; one-stage ARIMA-GARCH (not available for the airline model); and two-stage, a zero-mean
+  GARCH(1,1) on SARIMAX's Kalman-standardized residuals after `loglikelihood_burn`.
+- `report.py` prints the full tables; the guide's section 4 has the summary and the decision rules.
+
+Findings:
+- **The model type barely matters; T and the ARCH strength decide.**
+  - The LR test finds GARCH in 4–8% of samples at T = 60.
+  - It finds it in 19–34% at 120, 43–74% at 240, 65–90% at 360 and 86–99% at 600.
+  - The GARCH fit sits on a boundary in 74–86% of fits at 60, 47–59% at 120, 16–21% at 240 and at most 11%
+    from 360.
+- **The one-step variance-forecast loss, GARCH / constant:**
+  - It falls below 1 from T ≈ 120 for typical ARCH (0.8–1.0) and from about 60–120 for persistent ARCH.
+  - At 240 it is 0.40–0.56 (typical) and 0.17–0.23 (persistent).
+  - Where there is no GARCH it is 1.8–2.8, i.e. worse.
+- **Two stages match one stage.** Detection is 0–3 points lower, with the same boundary rate and persistence
+  RMSE. The variance forecasts are 6–26% better at T ≤ 120 and equal from 240. So the airline model plus GARCH
+  works in two stages, which the guide's L1 fallback now gives as a recipe.
+- **p-value sizes at nominal 5%:**
+  - The GARCH tests are never oversized: ARCH-LM(12) 0–5%, LR one-stage 1–5%, LR two-stage 0–4%.
+  - Under GARCH, the AR/MA Wald tests with SARIMAX's default `opg` SEs are oversized at **6–17%**, and the
+    problem does not shrink with T. They are 3–11% with `cov_type="robust"` and 4–10% with the one-stage
+    GARCH fit, from T = 120.
+  - The slope and intercept tests are 1–8% with any method.
+  - At T = 60, the AR/MA tests are 6–15% for every method even without GARCH: small-sample ARMA.
+
 ## Literature: what is known, what is new
 
 The full review is [`reports/ARMA GARCH limitations literature review.md`](reports/ARMA%20GARCH%20limitations%20literature%20review.md).
@@ -455,7 +487,9 @@ numbers to the guide's codes:
 
 - **Start with `compare(y, exog=X, order=..., trend="c")`** (package 0.3.0). It runs the checks below and prints a
   recommendation with flagged limitations and fallbacks; `sarimax_garch/GUIDE.md` is the workflow behind it.
-- **If you keep SARIMAX while GARCH may be present**, fit it with `cov_type="robust"` (E6).
+- **If you keep SARIMAX while GARCH may be present**, fit it with `cov_type="robust"` (E6, E10).
+- **For seasonal models such as the airline model, fit GARCH in two stages** (`sarimax_garch/GUIDE.md`,
+  section 4). Do not fit GARCH below about 100 observations, and expect it to be identifiable from about 240 (E10).
 - **To compare models across backends, d or distributions, use the holdout log-likelihood.** Call
   `compare(..., holdout=0.2)`, or `holdout_logscore()` with `dm_test()`, and report CRPS alongside (E8). Never
   compare in-sample llf or AIC across backends.

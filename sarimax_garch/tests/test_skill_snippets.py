@@ -52,6 +52,7 @@ def test_guide_python_blocks_run(namespace):
     assert ns["fc"].conf_int(alpha=0.10, method="simulated").shape == (12, 2)
     assert ns["bt_g"].shape[0] == 6 and "logscore" in ns["bt_g"].columns
     assert len(ns["ls_g"]) == 50 and 0 <= ns["dm_p"] <= 1
+    assert ns["lr2"] >= 0 and ns["var_next"].iloc[0] > 0 and len(ns["r"]) == len(ns["y"]) - ns["burn"]
     assert np.isfinite(ns["cmp_ho"].table.loc["SARIMAX", "holdout_logscore"])
 
 
