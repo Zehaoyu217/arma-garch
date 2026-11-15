@@ -9,7 +9,8 @@ cd verification/limitations
 python3 e1_backends.py && python3 e2_bands.py && python3 e3_skew.py && python3 e4_leverage.py \
   && python3 e5_converged.py && python3 e6_sarimax_vs_garch.py && python3 e8_holdout_logscore.py \
   && python3 e9_dm_null.py && python3 e10_sample_size.py && python3 e11_valid_inference.py \
-  && python3 e11_size_check.py && python3 e12_power_source.py && python3 report.py   # about 50 minutes on 12 cores
+  && python3 e11_size_check.py && python3 e12_power_source.py && python3 e13_identification.py abcd 400 12 300 \
+  && python3 e13_identification.py ef 300 12 && python3 report.py   # about 90 minutes on 12 cores
 python3 e7_arch_mamean.py      # needs a Python with arch >= 9.0 (not a package dependency)
 ```
 The results of E1–E5 are identical to the last digit (all 2,267 numbers in `out/`) on Python 3.9.6 and 3.11.15,
@@ -17,8 +18,8 @@ both with numpy 2.0.2, scipy 1.13.1, pandas 2.3.3 and statsmodels 0.14.6.
 
 **Follow-ups added the same day:**
 - E6 (SARIMAX vs SARIMAX-GARCH, both ways round) and E7 (MA-GARCH against arch 9.0).
-- `compare()` in package 0.3.0, which runs the decision workflow.
-- The user guide [`sarimax_garch/GUIDE.md`](../../sarimax_garch/GUIDE.md), with limitation codes L1–L15 and fallbacks.
+- `compare()` in package 0.3.1, which runs the decision workflow.
+- The user guide [`sarimax_garch/GUIDE.md`](../../sarimax_garch/GUIDE.md), with limitation codes L1–L17 and fallbacks.
 - The literature review in [`reports/`](reports/), with its notes in `research_notes/`.
 `common.py` holds the Hansen (1994) skew-t (ppf, cdf, density; checked: mass 1, mean 0, variance 1), a
 simulator that takes any standardised shocks and an optional GJR leverage term, and two prototypes the
@@ -495,6 +496,156 @@ LR test (one-stage; two-stage for the airline model), share choosing GARCH at 5%
 - **The test matters more than the mean model.** ARCH-LM(4) has 3–25 points less power than the LR test, and
   ARCH-LM(12) less again at T = 120 (0.13 against 0.24 for typical GARCH).
 
+### E13 — can the mean model, or fat tails, manufacture GARCH? (`e13_identification.py`)
+
+E12 showed that the low power is GARCH's own. E13 asks two things:
+- whether identification problems of the **mean** model reach the residuals that GARCH is tested on;
+- whether fat tails alone fake GARCH.
+
+Cells have 400 series each (300 for the bootstrap and for (e) and (f)); `report.py` prints every table.
+
+**(a) Unidentified AR/MA coefficients do not mean unidentified residuals.** One shock series per replication
+drives every design. Share choosing GARCH at 5%, T = 120 / 240 / 480:
+
+| design | false GARCH, one-stage LR | false GARCH, two-stage LR | power at T = 120, one-stage (oracle 0.25) | AR/MA estimate, 5–95% | residual error / sd, T = 120 → 480 |
+|---|---|---|---|---|---|
+| white noise, constant only | 0.025 / 0.015 / 0.028 | 0.025 / 0.015 / 0.028 | 0.25 | — | 0.06 → 0.03 |
+| white noise fitted as ARMA(1,1) (common factor) | 0.040 / 0.020 / 0.037 | 0.025 / 0.013 / 0.028 | 0.21 | φ̂ about −0.9 … 0.9 at every T (5–95%) | 0.17 → 0.08 |
+| ARMA(1,1), roots .5 and .4 (near-cancelling) | 0.040 / 0.028 / 0.037 | 0.022 / 0.015 / 0.037 | 0.22 | φ̂ −0.82 … 0.84 → −0.57 … 0.78 | 0.16 → 0.07 |
+| MA(1), θ .9 | 0.048 / 0.045 / **0.087** | 0.028 / 0.015 / 0.040 | 0.29 (inflated) | θ̂ 0.78 … 0.96 → 0.86 … 0.93 | 0.19 → 0.09 |
+| MA(1), θ .9, pre-sample shock set to 0 | 0.035 / 0.018 / 0.035 | 0.028 / 0.015 / 0.037 | 0.23 | θ̂ 0.83 … 1.02 → 0.87 … 0.94 | 0.12 → 0.05 |
+| white noise fitted as ARIMA(0,1,1) (over-differenced) | 0.062 / 0.083 / **0.168** | 0.033 / 0.018 / 0.040 | 0.28 (inflated) | θ̂ piles up at −1 (5% quantile −1.0 at every T) | 0.24 → 0.18 |
+
+- **A common factor leaves the residuals identified.** The AR and MA coefficients are not identified: φ̂ lands
+  anywhere in about [−0.9, 0.9] (5–95%), and that range does not shrink with T. But the residuals depend only on the net
+  filter (1 − φL)/(1 + θL), which is identified, and their error shrinks like 1/√T.
+- **So the GARCH test behaves as with any two-parameter mean model.** False alarms run 1–4%, and power is 3–4
+  points below the oracle at T = 120 and 1–3 from 240. E12's well-identified ARMA(1,1) cost the same.
+- **The residuals themselves are not identified when an MA root is on or near the unit circle.**
+  - The conditional likelihood sets the pre-sample shock to zero. The error this leaves in the residuals decays
+    like |θ|^t, or not at all at θ = −1: there the residual error stops shrinking like 1/√T.
+  - The one-stage LR mistakes that start-up error for a volatility burst: 8.7% false GARCH at T = 480 with
+    θ = .9, and 6–17% when white noise is over-differenced.
+  - Setting the pre-sample shock to zero removes the θ = .9 excess (3.5%), which proves the cause.
+  - The exact likelihood (two-stage, Kalman) is unaffected: 1–4%. `compare()` decides with ARCH-LM on
+    SARIMAX's residuals there (L9). The MA(1) pile-up at the unit circle is a known result
+    (Davis & Dunsmuir 1996).
+
+**(b) Non-fundamental shocks: the one case where the mean model manufactures GARCH.**
+y = 0.1 + ε_t + 2ε_{t−1} has its MA root inside the unit circle. Every fit returns its invertible twin
+(θ̂ = 0.50, with the same autocorrelations), whose residuals are an all-pass filter of the shocks. Those
+residuals are uncorrelated, but dependent unless the shocks are normal (Breidt, Davis & Trindade 2001). The data
+have no GARCH. Share rejecting "no ARCH" at 5%, T = 120 / 240 / 480:
+
+| shocks | ARCH-LM(4) on the true shocks | ARCH-LM(4) on the residuals | t LR, one-stage | lag-1 autocorrelation of squared residuals |
+|---|---|---|---|---|
+| normal, θ = 2 | 0.040 / 0.048 / 0.048 | 0.025 / 0.050 / 0.048 | 0.022 / 0.028 / 0.030 | −0.02 / −0.01 / −0.01 |
+| t(8), θ = 2 | 0.050 / 0.037 / 0.043 | **0.155 / 0.235 / 0.407** | 0.120 / 0.175 / 0.378 | 0.07 / 0.08 / 0.09 |
+| t(5), θ = 2 | 0.033 / 0.062 / 0.055 | **0.225 / 0.557 / 0.775** | 0.210 / 0.495 / 0.767 | 0.12 / 0.18 / 0.18 |
+| t(5), θ = .5 (the invertible twin) | 0.050 / 0.070 / 0.060 | 0.040 / 0.065 / 0.062 | 0.020 / 0.030 / 0.033 | −0.03 / −0.02 / −0.01 |
+
+- **With normal shocks nothing happens.** An all-pass filter of iid normal shocks is again iid normal.
+- **With fat tails the "GARCH" is real dependence, but not in the shocks.** The one-step errors given the
+  observed past really are conditionally heteroskedastic. The shocks themselves are not: their own ARCH-LM stays
+  at 3–6%.
+- **No test on the residuals can tell the two apart.** Locating the root needs a non-Gaussian likelihood
+  without the invertibility constraint (Lii & Rosenblatt 1992), which the package does not have. The
+  noncausal-AR version of the same problem is in Lanne & Saikkonen (2011).
+
+**(c) Fat tails alone fake GARCH in the Gaussian LR.** Under iid shocks with kurtosis κ, the Gaussian quasi-LR
+of a variance parameter is (κ − 1)/2 times its normal-theory value, because the Gaussian likelihood assumes
+Var(z²) = 2. For t(5) shocks, κ = 9, which makes it four-fold. AR(1) mean; share rejecting "no GARCH" at 5%,
+T = 120 / 240 / 480:
+
+| shocks | Gaussian LR (`compare()` ≤ 0.3.0) | Gaussian LR ÷ (κ̂ − 1)/2, null residuals | Gaussian LR ÷ max(1, (κ̂ − 1)/2), GARCH std. residuals | **t LR** | ARCH-LM(4) | restricted bootstrap, T = 240 |
+|---|---|---|---|---|---|---|
+| normal | 0.015 / 0.015 / 0.030 | 0.018 / 0.010 / 0.035 | 0.013 / 0.010 / 0.030 | 0.015 / 0.007 / 0.030 | 0.030 / 0.028 / 0.043 | — |
+| t(8) | 0.080 / 0.090 / 0.098 | 0.020 / 0.035 / 0.028 | 0.028 / 0.048 / 0.033 | 0.013 / 0.025 / 0.033 | 0.037 / 0.055 / 0.043 | — |
+| t(5) | 0.138 / 0.188 / 0.175 | 0.013 / 0.035 / 0.022 | 0.035 / 0.052 / 0.035 | 0.028 / 0.037 / 0.018 | 0.065 / 0.045 / 0.043 | 0.050 |
+| contaminated normal (κ 8.3) | **0.172 / 0.260 / 0.345** | 0.013 / 0.028 / 0.037 | 0.052 / 0.058 / 0.070 | 0.015 / 0.037 / 0.020 | 0.020 / 0.035 / 0.077 | 0.050 |
+| skew-t (ν 8, skewness −1) | 0.065 / 0.147 / 0.135 | 0.013 / 0.025 / 0.028 | 0.028 / 0.045 / 0.040 | 0.020 / 0.045 / 0.028 | 0.035 / 0.043 / 0.058 | 0.057 |
+
+Power with typical GARCH:
+
+| shocks | Gaussian LR | ÷ null κ̂ | ÷ GARCH κ̂ | **t LR** | ARCH-LM(4) |
+|---|---|---|---|---|---|
+| normal | 0.22 / 0.47 / 0.78 | 0.20 / 0.47 / 0.77 | 0.21 / 0.46 / 0.77 | 0.20 / 0.44 / 0.77 | 0.18 / 0.41 / 0.68 |
+| t(8) | (0.29 / 0.56 / 0.84) | 0.18 / 0.41 / 0.72 | 0.22 / 0.45 / 0.72 | 0.20 / 0.48 / 0.79 | 0.20 / 0.37 / 0.63 |
+| t(5) | (0.35 / 0.61 / 0.84) | 0.14 / 0.35 / 0.61 | 0.22 / 0.42 / 0.64 | 0.26 / 0.50 / 0.78 | 0.19 / 0.36 / 0.57 |
+| contaminated normal | (0.47 / 0.68 / 0.88) | 0.14 / 0.31 / 0.54 | 0.23 / 0.38 / 0.58 | 0.27 / 0.52 / 0.86 | 0.18 / 0.28 / 0.47 |
+| skew-t | (0.34 / 0.56 / 0.88) | 0.14 / 0.41 / 0.69 | 0.22 / 0.44 / 0.72 | 0.23 / 0.47 / 0.82 | 0.16 / 0.35 / 0.62 |
+
+The Gaussian LR's power is in brackets because its size is wrong.
+
+- **The t LR is the test to use.** Its false-alarm rate is 1–4.5% under all five shapes, including the two that
+  are not t, and it has the most power of the valid cheap tests.
+- **It matches the exactly sized restricted bootstrap:** 0.50 against 0.49 with t(5) shocks at T = 240. The
+  bootstrap itself holds 5.0–5.7% on every shape, because it resamples the real residuals.
+- **With normal shocks the t LR gives up 0–3 points** to the Gaussian LR.
+- **Scaling by the null residuals' kurtosis restores size but costs power,** because GARCH itself fattens the
+  unconditional tails.
+- **Scaling by the GARCH fit's kurtosis keeps more power,** but runs 5–7% under the contaminated normal.
+
+**(d) GARCH's weak identification does not leak into the mean.** Under symmetric shocks the information matrix
+is block-diagonal between the mean parameters (constant, regression, AR, MA) and the GARCH parameters. The
+reason: each cross term is an odd function of a single past shock (Engle 1982 for regression with ARCH; the same
+argument goes through for ARMA means), so it averages to zero when the shocks are symmetric.
+- **Measured on AR(1)-GARCH and MA(1)-GARCH at T = 50,000 (robust sandwich):** with normal or t(8) shocks, every
+  correlation between a mean estimate and α̂ or β̂ is within ±0.03.
+- **With skew-t shocks the separation fails:** correlations reach 0.05–0.14. That is also where E3 and E4 found
+  the mean biased.
+- **E11(b) shows the practical side:** fitting GARCH where there is none, so that β is unidentified, still
+  covers the AR coefficient 0.92–0.96.
+
+**(e) `compare()` end to end.** The raw tests in (c) overstate the damage. `compare()` also demotes a GARCH fit
+that ends on a boundary to SARIMAX (L5), and fat-tail false alarms often do. Share of series for which
+`compare()` recommends GARCH, AR(1) mean, T = 120 / 240 / 480:
+
+| shocks | GARCH | Gaussian LR alone | `compare()` ≤ 0.3.0 (Gaussian LR) | `compare()` 0.3.1 (t LR) | 0.3.1 with `dists=("normal",)` (kurtosis-scaled) |
+|---|---|---|---|---|---|
+| normal | none | 0.013 / 0.023 / 0.040 | 0.003 / 0.013 / 0.007 | 0.000 / 0.013 / 0.007 | 0.000 / 0.013 / 0.007 |
+| t(8) | none | 0.077 / 0.087 / 0.123 | 0.010 / 0.033 / 0.043 | 0.003 / 0.017 / 0.010 | 0.010 / 0.007 / 0.010 |
+| t(5) | none | 0.120 / 0.197 / 0.183 | 0.030 / 0.053 / 0.057 | 0.013 / 0.013 / 0.010 | 0.017 / 0.017 / 0.020 |
+| contaminated normal | none | 0.207 / 0.230 / 0.263 | 0.030 / 0.073 / **0.123** | 0.010 / 0.010 / 0.037 | 0.017 / 0.027 / 0.020 |
+| normal | typical | 0.22 / 0.49 / 0.78 | 0.18 / 0.45 / 0.77 | 0.16 / 0.44 / 0.76 | 0.16 / 0.44 / 0.75 |
+| t(8) | typical | 0.28 / 0.66 / 0.82 | 0.18 / 0.58 / 0.81 | 0.14 / 0.47 / 0.77 | 0.14 / 0.47 / 0.72 |
+| t(5) | typical | 0.40 / 0.63 / 0.84 | 0.27 / 0.53 / 0.81 | 0.19 / 0.43 / 0.75 | 0.17 / 0.32 / 0.63 |
+| contaminated normal | typical | 0.48 / 0.67 / 0.85 | 0.27 / 0.57 / 0.81 | 0.17 / 0.49 / 0.81 | 0.15 / 0.31 / 0.57 |
+
+- **The old rule's protection fades as T grows.** False GARCH reaches 4–6% with t shocks and 12% with
+  contaminated-normal shocks at T = 480, and it keeps rising. The new rule stays at or below 3.7% in every cell.
+- **The price is power under fat-tailed GARCH:** 4–11 points (t(8) at T = 240: 0.47 against 0.58), and about one
+  point with normal shocks.
+  - Part of that gap is the old rule's extra size.
+  - The rest is the t LR's conservatism: 1–4.5% at a nominal 5% under fat tails, against 3–5% for the Gaussian
+    LR under normal shocks. A likely reason, not measured here, is that the joint ν estimate absorbs outliers
+    that would otherwise look like volatility clustering.
+- **`compare(bootstrap_lr=199)` recovers the power at exact size.** In (c), the restricted bootstrap found
+  t(5) GARCH in 49% of series at T = 240, against 50% for the t LR and 5.0% false alarms.
+- **Keep `"t"` in `dists`.** The kurtosis-scaled rule that `dists=("normal",)` falls back on loses up to 24
+  points of power under heavy tails (contaminated normal at T = 480: 0.57 against 0.81).
+- **E13 also caught a crash.** On one series in 300 (t(5) shocks with GARCH, T = 120), `compare()` raised
+  `LinAlgError`.
+  - The constant-variance t fit ran towards ν = 2.
+  - The simplex polish slid below the optimiser's bound of 2.05, and the finite-difference scores stepped below
+    ν = 2.
+  - Fixed in 0.3.1: the objective now enforces the same bound, and a non-finite covariance gives NaN standard
+    errors with a warning instead of raising. A regression test covers it.
+
+**(f) Does GARCH still help when the shocks are non-fundamental?** Holdout log score over the last 25% (parameters
+fitted on the rest) of MA(1)-GARCH-t minus MA(1)-t, 300 series per cell:
+
+| design | T = 240: mean gain (nats/obs) | T = 480: mean gain | T = 480: share with GARCH better |
+|---|---|---|---|
+| θ = 2, normal shocks | −0.006 (±0.002) | −0.002 (±0.001) | 0.41 |
+| θ = 2, t(5) shocks | +0.005 (±0.002) | **+0.010** (±0.002) | 0.69 |
+| θ = .5, t(5) shocks (the invertible twin) | −0.006 (±0.001) | −0.004 (±0.001) | 0.38 |
+
+So in the non-fundamental case GARCH is not a false positive for forecasting. It captures a real, if small,
+feature of the one-step errors. Where GARCH is merely overfitting, in the two control rows, it costs 0.002–0.006
+nats per observation. What it gets wrong is the attribution: the shocks themselves have no volatility
+clustering.
+
 ## Literature: what is known, what is new
 
 The full review is [`reports/ARMA GARCH limitations literature review.md`](reports/ARMA%20GARCH%20limitations%20literature%20review.md).
@@ -528,8 +679,9 @@ What the review added to the study:
 
 ## Limitations, ranked by consequence
 
-The guide and `compare()` number these limitations L1–L15 in workflow order. Mapping from this section's
-numbers to the guide's codes:
+The guide and `compare()` number these limitations L1–L17 in workflow order. L16 (the Gaussian LR is not robust to
+fat tails; fixed in `compare()` 0.3.1) and L17 (non-fundamental MA shocks) come from E13 and are described there.
+Mapping from this section's numbers to the guide's codes:
 - #1 → L7
 - #2 → L8
 - #3 and #4 → L12
@@ -575,7 +727,7 @@ numbers to the guide's codes:
 
 ## What to do today
 
-- **Start with `compare(y, exog=X, order=..., trend="c")`** (package 0.3.0). It runs the checks below and prints a
+- **Start with `compare(y, exog=X, order=..., trend="c")`** (package 0.3.1). It runs the checks below and prints a
   recommendation with flagged limitations and fallbacks; `sarimax_garch/GUIDE.md` is the workflow behind it.
 - **If you keep SARIMAX while GARCH may be present**, fit it with `cov_type="robust"` (E6, E10).
 - **For seasonal models such as the airline model, fit GARCH in two stages** (`sarimax_garch/GUIDE.md`,
@@ -593,3 +745,8 @@ numbers to the guide's codes:
   backtest their coverage with `SARIMAXGARCH.backtest()`, because they ignore estimation error.
 - **To decide on GARCH**, compare `garch=(1, 1)` with the same model fitted with
   `fixed_params={"alpha.L1": 0, "beta.L1": 0}`. Never compare it with the `garch=None` fit.
+- **Compute that LR with `dist="t"`** (what `compare()` 0.3.1 does). The Gaussian LR is (κ − 1)/2 times too
+  large under fat tails and picks GARCH for 8–35% of homoskedastic fat-tailed series (E13). Then estimate the
+  mean with `dist="normal"`.
+- **If GARCH is found while an MA estimate sits near ±1,** trust ARCH-LM on SARIMAX's residuals or the
+  two-stage test, not the one-stage LR (E13).

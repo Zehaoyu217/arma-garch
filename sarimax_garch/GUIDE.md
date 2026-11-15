@@ -9,11 +9,11 @@ This guide answers four questions with measured evidence:
 `compare()` runs the workflow below as one function call.
 
 **Where the evidence comes from:**
-- **E1–E7:** Monte Carlo experiments in [`../verification/limitations/`](../verification/limitations/README.md). Each one is a script you can rerun; E6 is the SARIMAX-vs-GARCH grid, with 28 designs and 300 series each.
+- **E1–E13:** Monte Carlo experiments in [`../verification/limitations/`](../verification/limitations/README.md). Each one is a script you can rerun; E6 is the SARIMAX-vs-GARCH grid, with 28 designs and 300 series each.
 - **"Small-sample study" and "horizon study":** sections of [`../verification/README.md`](../verification/README.md).
 - **Literature:** [the literature review](../verification/limitations/reports/ARMA%20GARCH%20limitations%20literature%20review.md); the key references are at the end of this guide.
 
-**Limitation codes L1–L15** are the codes `compare()` prints in its flags.
+**Limitation codes L1–L17** are the codes `compare()` prints in its flags.
 
 ## 1. What changes when you switch GARCH on
 
@@ -123,6 +123,31 @@ from the same GARCH shocks:
 - **The choice of test matters more than the mean model.** ARCH-LM(4) has 3–25 points less power than the LR
   test, and ARCH-LM(12) less again: 13% against 24% for typical GARCH at T = 120.
 
+**Do the mean model's identification problems reach the GARCH test? (E13)** Two different things can be
+unidentified, and only one of them matters for GARCH:
+- **The AR/MA coefficients: harmless for GARCH.**
+  - When the AR and MA factors cancel (white noise fitted as ARMA(1,1)) or nearly cancel (roots .5 and .4), φ̂
+    lands anywhere in about [−0.9, 0.9] (5–95% of fits), at every T.
+  - The residuals depend only on the net filter (1 − φL)/(1 + θL), which is identified. Their error shrinks like
+    1/√T.
+  - So the GARCH test behaves as with any two-parameter mean: false alarms 1–4%, and power 3–4 points below the
+    oracle at T = 120.
+  - Only the AR/MA coefficients' own inference breaks. Lower the orders (L9 flags cancelling roots).
+- **The residuals themselves: this matters, in two cases.**
+  - *An MA root on or near the unit circle, in the one-stage engine.* The conditional likelihood sets the
+    unobserved pre-sample shock to zero. Its trace in the residuals decays like |θ|^t, and never at θ = −1, and
+    the one-stage LR reads it as a volatility burst: 9% false GARCH at T = 480 with θ = .9, and 6–17% for
+    over-differenced white noise. Setting the pre-sample shock to zero removes the θ = .9 excess, which proves
+    the cause. The exact likelihood (two stages) stays at 1–4%, and `compare()` decides with ARCH-LM there (L9).
+  - *An MA root inside the unit circle (non-fundamental shocks), with fat tails (L17).* Every fit returns the
+    invertible twin, whose residuals are uncorrelated but not independent. GARCH tests then reject in 12–41% of
+    series with t(8) shocks and 21–78% with t(5) shocks, although the shocks have no GARCH (their own ARCH-LM:
+    3–6%). With normal shocks nothing happens. GARCH even improves the holdout log score a little (+0.010
+    nats/obs at T = 480), so for forecasting it is not wrong, only misattributed.
+- **GARCH's own weak identification does not leak into the mean.** Under symmetric shocks the mean and GARCH
+  estimates are asymptotically uncorrelated: |r| ≤ 0.03 at T = 50,000. Under skew they are not (up to 0.14),
+  which is the territory of E3 and E4.
+
 **One stage or two?**
 - **Non-seasonal SARIMAX, any (p, d, q), with or without X:** the package estimates the mean and GARCH together
   in one likelihood. The only two-stage element is the ARCH-LM pre-test on the SARIMAX residuals.
@@ -161,8 +186,11 @@ section 1.
 | p-value | its null | rejection rate at nominal 5% | evidence |
 |---|---|---|---|
 | ARCH-LM(12) on SARIMAX's residuals | no ARCH | 0–5% (conservative at T ≤ 120) | E10 |
-| LR test, GARCH vs constant variance, one stage / two stages | no GARCH | 1–5% / 0–4% | E6, E10 |
-| LR test with restricted-bootstrap p-value (`garch_test`) | no GARCH | 4.8% at T = 120, 3.0% at 250 (exact level by construction) | E11 |
+| LR test, GARCH vs constant variance, one stage / two stages, normal shocks | no GARCH | 1–5% / 0–4% | E6, E10 |
+| the Gaussian LR with fat-tailed shocks: t(8) / t(5) / contaminated normal / skew-t | no GARCH | **8–10% / 14–19% / 17–35% / 7–15%**: oversized (L16) | E13 |
+| the t LR (`dist="t"`; `compare()`'s decision from 0.3.1) | no GARCH | 1–4.5% under all five shock shapes | E13 |
+| one-stage LR near an MA unit root: θ = .9 / over-differenced (θ = −1) | no GARCH | 5–9% / 6–17% (unknown pre-sample shocks; two-stage 1–4%) | E12, E13 |
+| LR test with restricted-bootstrap p-value (`garch_test`) | no GARCH | 4.8% at T = 120, 3.0% at 250; 5.0–5.7% under fat tails (exact level by construction) | E11, E13 |
 | Wald test of an AR/MA coefficient, SARIMAX's default `opg` | its true value, GARCH present | **6–17%**: oversized, and it does not shrink with T | E6, E10 |
 | the same, SARIMAX `cov_type="robust"` | | 3–11% from T = 120 (4–15% at 60) | E10 |
 | the same, one-stage GARCH fit (robust) | | 4–10% from T = 120 (7–17% at 60) | E10 |
@@ -261,10 +289,10 @@ sm = SARIMAXGARCH(y, exog=X, order=(1, 0, 0), trend="c").fit(cov_type="robust")
 
 ```python
 lm_stat, lm_p = arch_lm_test(sm.resid, lags=4)
-mod = SARIMAXGARCH(y, exog=X, order=(1, 0, 0), trend="c", garch=(1, 1))
+mod = SARIMAXGARCH(y, exog=X, order=(1, 0, 0), trend="c", garch=(1, 1), dist="t")
 null = mod.fit(fixed_params={"alpha.L1": 0.0, "beta.L1": 0.0})   # constant variance, same likelihood as the GARCH fit
 g = mod.fit()
-lr = 2 * (g.llf - null.llf)                                       # > 5.99 -> GARCH
+lr = 2 * (g.llf - null.llf)                                       # > 5.99 -> GARCH (the t LR: valid under fat tails)
 ```
 
 How often each rule picks GARCH (E6, 300 series per cell, normal shocks, AR(1) φ .5 and MA(1) θ .5 means):
@@ -278,9 +306,21 @@ How often each rule picks GARCH (E6, 300 series per cell, normal shocks, AR(1) �
 With an MA root near the unit circle (θ = .9, no GARCH), the engine-based rules false-alarm more: LR 0.06–0.11
 and AIC 0.12–0.21, against 0.04–0.06 for ARCH-LM. That is why `compare()` decides with ARCH-LM there (L9).
 
-**Use the LR test within the engine.** It has the right size (the χ²(2) cut-off is conservative because α = 0 lies on the boundary; Andrews 2001, Demos & Sentana 1998) and the most power of the correctly sized rules. A parametric bootstrap of the LR statistic, or Demos & Sentana's one-sided LM test, would give exact size. AIC is liberal and BIC conservative (Hughes, King & Kwek 2004).
+**Use the LR test within the engine, computed with `dist="t"`.** It has the right size (the χ²(2) cut-off is conservative because α = 0 lies on the boundary; Andrews 2001, Demos & Sentana 1998) and the most power of the correctly sized rules. The restricted bootstrap (`garch_test`) gives exact size. AIC is liberal and BIC conservative (Hughes, King & Kwek 2004).
 
-`compare()` decides on that single test and does not combine tests, because a union of tests over-rejects. When an MA root is near the unit circle, it uses ARCH-LM on the SARIMAX residuals instead (L9).
+**Why t and not the Gaussian LR (L16).** The Gaussian quasi-likelihood assumes Var(z²) = 2. Under iid shocks with kurtosis κ, that variance is κ − 1, so the Gaussian LR for a variance parameter is (κ − 1)/2 times too large: 4-fold for t(5) shocks. On homoskedastic AR(1) data, the Gaussian LR picks GARCH for 8–10% of series with t(8) shocks, 14–19% with t(5) shocks and 17–35% with contaminated-normal shocks (E13).
+- **The t LR stays at 1–4.5% under all five shapes tested,** including two that are not t (contaminated normal, skew-t). It has the most power of the valid cheap tests and matches the exactly sized restricted bootstrap (0.50 against 0.49 for t(5) GARCH at T = 240).
+- **The Gaussian LR divided by max(1, (κ̂ − 1)/2) of the GARCH standardized residuals** stays at 1–7%, but has less power.
+- **With normal shocks, the t LR behaves like the Gaussian one** (ν̂ goes to its bound) and gives up 0–3 points.
+
+So **test with t, then estimate with `dist="normal"`** (Step 3). The test needs a likelihood that knows the tails, while the mean estimates need the Gaussian QMLE's consistency under skew.
+
+`compare()` decides on that single test and does not combine tests, because a union of tests over-rejects. It uses the t LR when `"t"` is in `dists` (the default), and the kurtosis-scaled Gaussian LR when only `"normal"` is fitted. When an MA root is near the unit circle, it uses ARCH-LM on the SARIMAX residuals instead (L9).
+
+**End to end (E13 e):**
+- **The old Gaussian decision was partly rescued by `compare()`'s boundary rule (L5)**, since many fat-tail false alarms end on a boundary. Still, it recommended GARCH for 4–6% of homoskedastic t-shock series and 12% of contaminated-normal series at T = 480.
+- **The t-LR decision (0.3.1) stays at or below 3.7% everywhere.**
+- **The price is 4–11 points of power under fat-tailed GARCH,** about 1 with normal shocks. Pass `bootstrap_lr=199` to recover it at exact size.
 
 **In small samples:** no rejection is weak evidence (ARCH-LM has 10–20% power for typical monthly ARCH at 10–15 years, L6). But it is also when GARCH rarely pays off (small-sample study).
 
@@ -420,13 +460,15 @@ belongs to the in-sample LR test.
 | L6 | ARCH tests have low power in short samples | GARCH missed at 10–15 years | info when ARCH-LM does not reject and nobs < 360 | accept SARIMAX there (GARCH rarely pays off) |
 | L7 | symmetric t under skewed shocks biases the mean | intercept toward the mode | t-vs-normal intercept, ν at bound | `dist="normal"` |
 | L8 | no asymmetric (GJR) variance | intercept biased when leverage is present | sign-bias test | intercept from SARIMAX |
-| L9 | conditional likelihood near MA/AR unit roots; invertibility not enforced | MA θ near 1 unreliable; LR over-rejects | MA/AR roots, cancellation | compare with SARIMAX (exact, enforces invertibility); try d − 1; decide with ARCH-LM |
+| L9 | conditional likelihood near MA/AR unit roots; invertibility not enforced | MA θ near 1 unreliable. The unobserved pre-sample shock leaves a start-up error that the one-stage LR reads as GARCH: 9% false alarms at θ = .9, 17% when over-differenced (E13) | MA/AR roots, cancellation | compare with SARIMAX (exact, enforces invertibility); try d − 1; decide with ARCH-LM (`compare()` does) or in two stages |
 | L10 | single-start optimiser; `converged` reflects L-BFGS-B only | 2% of T = 250 t-fits at a worse optimum (E5) | converged = False | `compare()` refits from SARIMAX's estimates; `start_params=` |
 | L11 | GARCH's edge is short-horizon | no gain beyond ~6–12 steps | in the recommendation | SARIMAX for long-horizon paths |
 | L12 | default band is normal-shaped | wrong tails under t / GARCH | in the caveats | `conf_int(method="simulated")` |
 | L13 | bands ignore parameter uncertainty | under-coverage at small T, long h | in the caveats | widen; `backtest()` coverage; bootstrap intervals (not built) |
 | L14 | future exog taken as known | scenario risk missing from bands | — | one forecast per scenario |
 | L15 | residual diagnostics' p-values are approximate after GARCH (Li & Mak 1994; Francq, Roy & Zakoian 2005) | Ljung-Box / ARCH-LM on z indicative only | — | rely on `backtest()`; weighted tests (rugarch) for formal checks |
+| L16 | the Gaussian LR for GARCH is not robust to fat tails: it is (κ − 1)/2 times too large | it picks GARCH for 8–35% of homoskedastic fat-tailed series (E13) | info when the GARCH standardized residuals' kurtosis exceeds 4 | `compare()` decides with the t LR (with `dists=("normal",)`, the Gaussian LR ÷ max(1, (κ̂ − 1)/2)); by hand, fit both models with `dist="t"`; `garch_test()` for exact size |
+| L17 | an MA root inside the unit circle (non-fundamental shocks) is returned as its invertible twin | with fat-tailed shocks the residuals are uncorrelated but dependent: GARCH is "found" in 12–78% of series whose shocks have none (E13) | — (no residual test can tell) | for forecasting, judge GARCH by the holdout log score (it helps a little here: E13 f); for a structural reading of volatility, a non-Gaussian likelihood that can locate the root (Lii & Rosenblatt 1992; not in the package) |
 
 ## 8. Evidence and references
 
@@ -443,6 +485,7 @@ belongs to the in-sample LR test.
 - **E10:** sample size by model type (ARIMA(1,1,1), regression with ARIMA errors, airline), one stage vs two, and p-value sizes (`e10_sample_size.py`).
 - **E11:** valid inference when the textbook p-values fail: the restricted bootstrap for the GARCH test, and post-selection coverage of the mean (`e11_valid_inference.py`).
 - **E12:** where the low power comes from, with the same GARCH shocks behind eight mean models and an oracle (`e12_power_source.py`).
+- **E13:** whether the mean model's identification problems, or fat tails, manufacture GARCH; block diagonality; `compare()`'s decision end to end (`e13_identification.py`).
 
 **Earlier studies**, in `../verification/README.md`:
 - 1:1 checks against rugarch, statsmodels and arch;
@@ -451,32 +494,36 @@ belongs to the in-sample LR test.
 - the horizon study (levels vs differences; GARCH or not).
 
 **References.** These were checked against the publisher, Crossref or RePEc; the full list, with what each paper shows and its relation to E1–E7, is in the literature review.
-- Andrews (2001), *Econometrica* 69(3), 683–734 — testing with a parameter on the boundary.
-- Bollerslev & Wooldridge (1992), *Econometric Reviews* 11(2), 143–172 — QMLE and robust standard errors.
-- Christoffersen (1998), *International Economic Review* 39(4), 841–862 — conditional coverage of interval forecasts.
-- Demos & Sentana (1998), *Journal of Econometrics* 86(1), 97–127 — one-sided tests for GARCH; boundary mixtures.
-- Engle (1982), *Econometrica* 50(4), 987–1007 — ARCH-LM; ML vs least squares under ARCH.
 - Amisano & Giacomini (2007), *JBES* 25(2), 177–190 — comparing density forecasts by weighted likelihood ratio tests.
 - Andrews (2000), *Econometrica* 68(2), 399–405 — the bootstrap is inconsistent when a parameter is on the boundary.
+- Andrews (2001), *Econometrica* 69(3), 683–734 — testing with a parameter on the boundary.
 - Berk, Brown, Buja, Zhang & Zhao (2013), *Annals of Statistics* 41(2), 802–837 — valid post-selection inference (PoSI).
+- Bollerslev & Wooldridge (1992), *Econometric Reviews* 11(2), 143–172 — QMLE and robust standard errors.
+- Breidt, Davis & Trindade (2001), *Annals of Statistics* 29(4), 919–946 — all-pass (non-invertible) series are uncorrelated but dependent unless the shocks are Gaussian.
 - Cavaliere, Nielsen & Rahbek (2017), *Journal of Time Series Analysis* 38(4), 513–534 — the restricted bootstrap is consistent for testing no ARCH.
+- Christoffersen (1998), *International Economic Review* 39(4), 841–862 — conditional coverage of interval forecasts.
 - Clark & McCracken (2001), *Journal of Econometrics* 105(1), 85–110 — equal-accuracy tests for nested models.
+- Davis & Dunsmuir (1996), *Econometric Theory* 12(1), 1–29 — MLE of an MA(1) with a root on or near the unit circle (the pile-up).
+- Demos & Sentana (1998), *Journal of Econometrics* 86(1), 97–127 — one-sided tests for GARCH; boundary mixtures.
 - Diebold (2015), *JBES* 33(1), doi:10.1080/07350015.2014.983236 — Diebold–Mariano tests compare forecasts, not models.
 - Diebold & Mariano (1995), *Journal of Business & Economic Statistics* 13(3), 253–263 — comparing predictive accuracy.
 - Efron (2014), *JASA* — estimation and accuracy after model selection (bootstrap smoothing).
+- Engle (1982), *Econometrica* 50(4), 987–1007 — ARCH-LM; ML vs least squares under ARCH.
 - Engle & Ng (1993), *Journal of Finance* 48(5), 1749–1778 — sign-bias tests.
 - Fithian, Sun & Taylor, "Optimal inference after model selection", arXiv:1410.2597 — selective inference.
 - Francq & Zakoian (2004), *Bernoulli* 10(4), 605–637 — QMLE of ARMA-GARCH.
 - Francq, Roy & Zakoian (2005), *JASA* 100(470), 532–544 — ARMA diagnostics with uncorrelated, dependent errors.
 - Giacomini & White (2006), *Econometrica* 74(6), 1545–1578 — tests of (conditional) predictive ability for estimated, possibly nested models.
+- Glosten, Jagannathan & Runkle (1993), *Journal of Finance* 48(5), 1779–1801 — GJR asymmetric GARCH.
 - Gneiting & Raftery (2007), *JASA* 102(477), 359–378 — proper scoring rules, CRPS.
 - Harvey, Leybourne & Newbold (1997), *International Journal of Forecasting* 13(2), 281–291 — the small-sample correction.
-- Glosten, Jagannathan & Runkle (1993), *Journal of Finance* 48(5), 1779–1801 — GJR asymmetric GARCH.
 - Hughes, King & Kwek (2004), *Economics Letters* 83(2), 269–275 — information criteria for ARCH.
 - Lamoureux & Lastrapes (1990), *JBES* 8, 225–235 — structural change and spurious persistence in GARCH.
+- Lanne & Saikkonen (2011), *Journal of Time Series Econometrics* 3(3) — noncausal autoregressions for economic time series.
+- Lee (1991), *Economics Letters* 37(3), 265–271 — the LM test for GARCH.
 - Lee, Sun, Sun & Taylor (2016), *Annals of Statistics* 44(3), 907–927 — exact post-selection inference (polyhedral lemma).
 - Leeb & Pötscher (2005), *Econometric Theory* 21, 21–59 — model selection and inference: facts and fiction.
-- Lee (1991), *Economics Letters* 37(3), 265–271 — the LM test for GARCH.
+- Lii & Rosenblatt (1992), *Journal of Multivariate Analysis* 43(2), 272–299 — approximate MLE for non-Gaussian non-minimum-phase MA processes (locating the roots).
 - Ma, Nelson & Startz (2007), *Studies in Nonlinear Dynamics & Econometrics* 11(1) — weak identification in GARCH(1,1).
 - Newey & Steigerwald (1997), *Econometrica* 65(3), 587–599 — non-Gaussian QMLE under asymmetry.
 - Pascual, Romo & Ruiz (2006), *Computational Statistics & Data Analysis* 50(9), 2293–2312 — bootstrap prediction for GARCH.

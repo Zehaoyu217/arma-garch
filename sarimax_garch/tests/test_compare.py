@@ -1,5 +1,6 @@
 """compare(): the GUIDE.md workflow as code -- end-to-end cases; holdout log score and predictive densities."""
 import numpy as np
+import pytest
 from scipy import stats
 
 from sarimax_garch import SARIMAXGARCH, _core, compare, dm_test, garch_test, holdout_logscore
@@ -99,6 +100,59 @@ def test_garch_test_restricted_bootstrap():
     assert r0["p_bootstrap"] > 0.05 and np.quantile(r0["lr_boot"], 0.95) < 5.99   # chi2(2) is conservative here
     res = compare(y1, exog=x, order=(1, 0, 0), dists=("normal",), bootstrap_lr=19)
     assert "restricted-bootstrap" in res.recommendation["reason"] and res.recommendation["model"] != "SARIMAX"
+
+
+def test_fat_tails_alone_do_not_trigger_garch():
+    """E13: on homoskedastic t(5) data the plain Gaussian LR rejects 'no GARCH' for 14-19% of series (its noise is
+    (kurtosis - 1)/2 times what the Gaussian likelihood assumes).  compare() decides with the t LR, or, when only
+    "normal" is fitted, with the Gaussian LR divided by max(1, (kurt - 1)/2) of the GARCH std. residuals (L16)."""
+    rng = np.random.default_rng(29)
+    z = rng.standard_t(5, 700) * np.sqrt(3 / 5)
+    y = np.zeros(700)
+    for t in range(1, 700):
+        y[t] = 0.1 + 0.5 * y[t - 1] + z[t]
+    y = y[-400:]
+    res = compare(y, order=(1, 0, 0), trend="c")
+    p = res.tests["p_value"]
+    assert p["LR GARCH vs constant variance (normal, within engine)"] < 0.01        # the old rule said GARCH
+    assert p["LR GARCH vs constant variance (t, within engine)"] > 0.3
+    assert res.recommendation["model"] == "SARIMAX" and "(t)" in res.recommendation["reason"]
+    assert any(f["code"] == "L16" for f in res.flags)
+    rn = compare(y, order=(1, 0, 0), trend="c", dists=("normal",))
+    zz = np.asarray(rn.models["engine GARCH(1,1) (normal)"].std_resid.dropna(), float)
+    k = np.mean(zz ** 4) / np.mean(zz ** 2) ** 2
+    st = rn.tests.loc["LR GARCH vs constant variance (normal, within engine)", "stat"] / max(1.0, (k - 1) / 2)
+    row = rn.tests.loc["LR GARCH vs constant variance (normal, kurtosis-scaled, within engine)"]
+    assert k > 4 and abs(row["stat"] - st) < 1e-10 and abs(row["p_value"] - stats.chi2.sf(st, 2)) < 1e-12
+    assert rn.recommendation["model"] == "SARIMAX" and "kurtosis-scaled" in rn.recommendation["reason"]
+
+
+def test_degenerate_t_fit_neither_crashes_compare_nor_the_covariance():
+    """E13(e) found a series (t(5) shocks with GARCH, T = 120) on which compare() raised LinAlgError: the
+    constant-variance t fit ran towards nu = 2, the simplex polish slid below the optimiser's bound of 2.05,
+    and the finite-difference scores stepped below nu = 2 (NaN) into pinv's SVD."""
+    rng = np.random.default_rng(8730252)
+    n, T = 720, 120
+    z = rng.standard_t(5, n) * np.sqrt(3 / 5)
+    e, s2 = np.empty(n), 1.0
+    for t in range(n):
+        if t:
+            s2 = 0.15 + 0.10 * e[t - 1] ** 2 + 0.75 * s2
+        e[t] = np.sqrt(s2) * z[t]
+    y = np.zeros(n)
+    for t in range(1, n):
+        y[t] = 0.1 + 0.5 * y[t - 1] + e[t]
+    y = y[-T:]
+    r = _core.fit_joint(y, p=1, q=0, dist="t", fixed={"alpha": 0.0, "beta": 0.0})
+    free = np.array([r.names.index(k) for k in ("const", "phi1", "omega", "nu")])
+    assert r["nu"] >= _core._NU_MIN and r.nu_at_lower_bound and np.all(np.isfinite(r.se[free]))
+    res = compare(y, order=(1, 0, 0), trend="c")                          # used to raise
+    assert res.recommendation["model"].startswith("SARIMAX + GARCH(1,1)")  # the GARCH is real here
+    theta = r.params.copy()
+    theta[r.names.index("nu")] = 2.0 + 1e-6                              # scores undefined one step away
+    with pytest.warns(UserWarning, match="could not be computed"):
+        cov, _, cov_o = _core._sandwich_cov(theta, r.y, None, 1, 0, "t", free=free)
+    assert np.all(np.isnan(cov[np.ix_(free, free)])) and np.all(np.isnan(cov_o[np.ix_(free, free)]))
 
 
 def test_short_sample_stops_garch():

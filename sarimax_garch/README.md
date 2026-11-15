@@ -39,6 +39,11 @@ valid across backends, d and distributions. Standalone versions: `holdout_logsco
 `garch_test()` tests "no GARCH" with a restricted-bootstrap p-value. The χ²(2) cut-off is conservative there,
 because α = 0 is on the boundary. The bootstrap test is correctly sized, at 4.8% at T = 120, and has 10–11 points
 more power. `compare(bootstrap_lr=199)` uses it to decide.
+
+From 0.3.1, `compare()` decides with the **t** LR, because the Gaussian LR is not robust to fat tails. Under iid
+shocks with kurtosis κ it is (κ − 1)/2 times too large, and it picks GARCH for 8–35% of homoskedastic
+fat-tailed series; the t LR stays at 1–4.5% (L16, E13). A hand-rolled LR test should fit both models with
+`dist="t"`.
 [`GUIDE.md`](GUIDE.md) explains when GARCH gains an edge over plain SARIMAX (regime-correct intervals,
 volatility forecasts, more precise mean estimates, valid AR/MA SEs) and when it does not (point forecasts,
 long horizons, short samples), how MA terms work with GARCH, and what each wrong choice costs — all measured.
@@ -92,7 +97,7 @@ levels-vs-differences choice matters far more — compare `d=0` and `d=1` with `
 
 ```
 pip install -e .            # needs pip >= 21.3 (PEP 660); or `pip install .`
-pytest                      # 20 tests incl. parity with statsmodels, sync with the standalone engine, compare(), and the code examples of the skill and GUIDE.md
+pytest                      # 27 tests incl. parity with statsmodels, sync with the standalone engine, compare(), and the code examples of the skill and GUIDE.md
 ```
-`src/sarimax_garch/_core.py` is a verbatim copy of `../fixed/joint_armax_garch.py` (v3.2), the engine validated
+`src/sarimax_garch/_core.py` is a verbatim copy of `../fixed/joint_armax_garch.py` (v3.2.1), the engine validated
 1:1 against rugarch, statsmodels and arch in `../verification/`; a test keeps the two in sync.

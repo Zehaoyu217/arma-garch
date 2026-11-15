@@ -193,8 +193,82 @@ def e12():
                                                          for m in models) + " |")
 
 
+def e13():
+    a = load("e13_a")
+    Ts = (120, 240, 480)
+    f3 = lambda xs: "/".join(f"{x:.3f}" for x in xs)
+    print(f"(a) ARMA identification: share rejecting at 5%, T = 120/240/480 ({a['R']} series per cell; "
+          "GARCH none = size, typical = power)\n")
+    print("| design | size, LR one-stage | size, LR two-stage | size, ARCH-LM(4) | power, LR one-stage | "
+          "power, LR two-stage | AR/MA estimate 5/50/95% (T = 240, no GARCH) | residual error / sd (T = 240): all, after 10 |")
+    print("|---|---|---|---|---|---|---|---|")
+    for m in a["cells"]["GARCH none | T=120"]:
+        cell = lambda g, T: a["cells"][f"GARCH {g} | T={T}"][m]
+        mid = cell("none", 240)
+        est = " · ".join(f"{k.split()[0]} {'/'.join(f'{x:+.2f}' for x in mid[k])}" for k in mid if k.endswith("5/50/95%"))
+        err = (f"{mid['resid error / sd']:.3f}, {mid['resid error / sd, after 10 obs']:.3f}"
+               if "resid error / sd" in mid else "–")
+        print(f"| {m} | {f3(cell('none', T)['LR one-stage'] for T in Ts)} | {f3(cell('none', T)['LR two-stage'] for T in Ts)} | "
+              f"{f3(cell('none', T)['ARCH-LM(4)'] for T in Ts)} | {f3(cell('typical', T)['LR one-stage'] for T in Ts)} | "
+              f"{f3(cell('typical', T)['LR two-stage'] for T in Ts)} | {est or '–'} | {err} |")
+    b = load("e13_b")
+    print(f"\n(b) Non-fundamental shocks, no GARCH: share rejecting at 5%, T = 120/240/480 ({b['R']} series per cell)\n")
+    cols = ["ARCH-LM(4), true shocks", "ARCH-LM(4), residuals", "LR one-stage, Gaussian",
+            "LR one-stage, Gaussian / ((kurt - 1)/2)", "LR one-stage, t"]
+    print("| design | " + " | ".join(cols) + " | theta-hat | lag-1 acf of squared residuals |")
+    print("|---|" + "---|" * (len(cols) + 2))
+    for name in dict.fromkeys(k.split(" | T=")[0] for k in b["cells"]):
+        c = [b["cells"][f"{name} | T={T}"] for T in Ts]
+        print(f"| {name} | " + " | ".join(f3(x[col] for x in c) for col in cols) + " | "
+              + "/".join(f"{x['theta-hat median']:.2f}" for x in c) + " | "
+              + "/".join(f"{x['lag-1 autocorrelation of squared residuals, median']:.2f}" for x in c) + " |")
+    cdat = load("e13_c")
+    rules = ["LR Gaussian (compare() default)", "LR Gaussian / ((kurt - 1)/2), null residuals",
+             "LR Gaussian / max(1, (kurt - 1)/2), GARCH std. residuals", "LR t", "ARCH-LM(4)"]
+    print(f"\n(c) Fat tails, AR(1) mean: share rejecting at 5%, T = 120/240/480 ({cdat['R']} series per cell; "
+          "GARCH none = size)\n")
+    print("| shocks | GARCH | " + " | ".join(rules) + " | kurtosis: null resid / GARCH std. resid (T = 480) |")
+    print("|---|---|" + "---|" * (len(rules) + 1))
+    for key in dict.fromkeys(k.rsplit(" | T=", 1)[0] for k in cdat["cells"]):
+        c = [cdat["cells"][f"{key} | T={T}"] for T in Ts]
+        sk, gk = key.split(" | GARCH ")
+        print(f"| {sk} | {gk} | " + " | ".join(f3(x[r] for x in c) for r in rules) + " | "
+              f"{c[-1]['kurtosis of null residuals, median']:.2f} / {c[-1]['kurtosis of GARCH std. residuals, median']:.2f} |")
+    print(f"\nRestricted bootstrap (garch_test, B = 99, reject when p <= .05; {cdat['R_boot']} series per cell):\n")
+    print("| cell | bootstrap LR | " + " | ".join(rules) + " |")
+    print("|---|---|" + "---|" * len(rules))
+    for key, v in cdat["boot"].items():
+        print(f"| {key.replace(' | ', ', ')} | {v['restricted bootstrap LR (B = 99, p <= .05)']:.3f} | "
+              + " | ".join(f"{v[r]:.3f}" for r in rules) + " |")
+    d = load("e13_d")
+    print("\n(d) Robust-sandwich correlation of the mean and GARCH estimates, T = 50,000, GARCH typical (two seeds)\n")
+    keys = list(next(iter(d.values()))[0])
+    print("| model, shocks | " + " | ".join(k.replace("phi1", "AR").replace("theta1", "AR/MA") for k in keys) + " |")
+    print("|---|" + "---|" * len(keys))
+    for name, rows in d.items():
+        ks = list(rows[0])
+        print(f"| {name.replace(' | ', ', ')} | " + " | ".join(" / ".join(f"{r[k]:+.3f}" for r in rows) for k in ks) + " |")
+    e = load("e13_e")
+    cols = ["Gaussian LR rejects", "old compare() picks GARCH", "new compare() picks GARCH (t LR)",
+            "new compare(dists=('normal',)) picks GARCH"]
+    print(f"\n(e) compare() end to end on an AR(1): share recommending GARCH, T = 120/240/480 ({e['R']} series per cell)\n")
+    print("| shocks | GARCH | " + " | ".join(cols) + " |")
+    print("|---|---|" + "---|" * len(cols))
+    for key in dict.fromkeys(k.rsplit(" | T=", 1)[0] for k in e["cells"]):
+        c = [e["cells"][f"{key} | T={T}"] for T in Ts if f"{key} | T={T}" in e["cells"]]
+        sk, gk = key.split(" | GARCH ")
+        print(f"| {sk} | {gk} | " + " | ".join(f3(x[col] for x in c) for col in cols) + " |")
+    f = load("e13_f")
+    print(f"\n(f) Non-fundamental MA: holdout log score (last 25%) of MA(1)-GARCH-t minus MA(1)-t ({f['R']} series per cell)\n")
+    fk = list(next(iter(f["cells"].values())))
+    print("| design | " + " | ".join(fk) + " |")
+    print("|---|" + "---|" * len(fk))
+    for key, v in f["cells"].items():
+        print(f"| {key.replace(' | ', ', ')} | " + " | ".join(f"{v[k]}" for k in fk) + " |")
+
+
 if __name__ == "__main__":
     for name, fn in (("E1", e1), ("E2", e2), ("E3", e3), ("E4", e4), ("E5", e5), ("E6", e6), ("E8", e8), ("E10", e10),
-                     ("E11", e11), ("E12", e12)):
+                     ("E11", e11), ("E12", e12), ("E13", e13)):
         print(f"\n### {name}\n")
         fn()

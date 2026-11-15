@@ -235,7 +235,10 @@ def compare(endog, exog=None, order=(1, 0, 0), trend="c", dists=("normal", "t"),
     holdout log-likelihood of each model (holdout_logscore, parameters fitted on the rest), with
     Diebold-Mariano tests -- the out-of-sample comparison that is valid across backends.
     bootstrap_lr: None, or B (e.g. 199): decide GARCH-vs-not by the restricted-bootstrap p-value of the LR test
-    (garch_test; exact size at the boundary, E11) instead of the conservative chi2(2) cut-off.
+    (garch_test; exact size at the boundary, E11, and under fat tails, E13) instead of the conservative chi2(2)
+    cut-off.  Without it the decision is the t LR when "t" is in dists, else the Gaussian LR scaled by the
+    kurtosis of the standardised residuals (the plain Gaussian LR over-rejects under fat tails, E13); near an MA
+    unit root it is ARCH-LM on the SARIMAX residuals.
     seasonal_order is not supported (GARCH or seasonal: pick one, L1) -- put seasonality in exog.
     Returns CompareResults; print(res.summary())."""
     p, d, q = (int(v) for v in order)
@@ -288,13 +291,28 @@ def compare(endog, exog=None, order=(1, 0, 0), trend="c", dists=("normal", "t"),
         lm_p.append(pv)
         tests.append(dict(test=f"ARCH-LM({lag}) on SARIMAX residuals", stat=st, df=lag, p_value=pv,
                           note="H0: no ARCH; valid without fitting GARCH"))
-    lr = {}
+    lr, lr_stat = {}, {}
     for dist in dists:
         base = null if dist == "normal" else tnull
         st = max(0.0, 2 * (garch[dist].llf - base.llf))
-        lr[dist] = float(stats.chi2.sf(st, 2))
+        lr[dist], lr_stat[dist] = float(stats.chi2.sf(st, 2)), st
         tests.append(dict(test=f"LR GARCH vs constant variance ({dist}, within engine)", stat=st, df=2,
-                          p_value=lr[dist], note="chi2(2) is conservative here (alpha = 0 on the boundary, L5)"))
+                          p_value=lr[dist], note="chi2(2) is conservative here (alpha = 0 on the boundary, L5)"
+                          + ("; over-rejects under fat tails (E13), see the kurtosis-scaled row" if dist == "normal"
+                             else "")))
+    kurt_z = np.nan
+    if "normal" in dists:
+        # Under iid shocks with kurtosis k the Gaussian quasi-LR of a variance parameter is (k - 1)/2 times its
+        # normal-theory value (the Gaussian likelihood assumes Var(z^2) = 2).  k is taken from the GARCH fit's
+        # standardised residuals, not the null's: GARCH itself fattens the unconditional tails.
+        zz = np.asarray(garch["normal"].std_resid.dropna(), float)
+        kurt_z = float(np.mean(zz ** 4) / np.mean(zz ** 2) ** 2)
+        st = lr_stat["normal"] / max(1.0, (kurt_z - 1) / 2)
+        lr["normal, kurtosis-scaled"] = float(stats.chi2.sf(st, 2))
+        tests.append(dict(test="LR GARCH vs constant variance (normal, kurtosis-scaled, within engine)", stat=st, df=2,
+                          p_value=lr["normal, kurtosis-scaled"],
+                          note=f"Gaussian LR / max(1, (kurt - 1)/2), kurt = {kurt_z:.2f} of the GARCH std. residuals"))
+    dec = "t" if "t" in dists else "normal, kurtosis-scaled"
     ref = "normal" if "normal" in dists else dists[0]
     sb_st, sb_p = sign_bias_test(garch[ref].std_resid.dropna())
     tests.append(dict(test=f"Engle-Ng joint sign bias (GARCH {ref} std. residuals)", stat=sb_st, df=3, p_value=sb_p,
@@ -371,17 +389,20 @@ def compare(endog, exog=None, order=(1, 0, 0), trend="c", dists=("normal", "t"),
 
     # --- recommendation ---------------------------------------------------------------------
     # One decision test, not a union (a union of tests over-rejects): the LR test within the engine (E6: 3-4%
-    # false positives, the most power of the correctly sized rules), except near an MA unit root, where the
-    # conditional likelihood's start-up inflates it (11% at theta = .9) and ARCH-LM on SARIMAX's residuals
-    # (exact likelihood) decides instead.
+    # false positives with normal shocks, the most power of the correctly sized rules), in a form that stays
+    # valid under fat tails: the t LR when "t" is fitted, else the kurtosis-scaled Gaussian LR (the plain
+    # Gaussian LR picks GARCH for 8-10% of homoskedastic t(8) series and 14-19% of t(5) series, E13).  Near an
+    # MA unit root, where the conditional likelihood's unknown pre-sample shocks inflate the LR (9% at
+    # theta = .9, 17% when over-differenced, E13), ARCH-LM on SARIMAX's residuals (exact likelihood) decides.
     ma_r = g_ref.maroots
     near_ma = bool(ma_r.size and np.min(np.abs(ma_r)) < 1.25)
     if near_ma:
         flags.append(_flag("L9", "info", "an MA root lies within 1.25 of the unit circle: the engine's LR test for GARCH "
-                           "over-rejects there (11% at theta = .9, E6)", "the GARCH decision uses ARCH-LM on the SARIMAX "
-                           "residuals instead (done here)"))
-    decide_p = lm_p[0] if near_ma else lr[ref]
-    decide_by = f"ARCH-LM({arch_lags[0]})" if near_ma else "LR within the engine"
+                           "over-rejects there (unknown pre-sample shocks: 9% at theta = .9, 17% over-differenced, "
+                           "E13)", "the GARCH decision uses ARCH-LM on the SARIMAX residuals instead (done here)"))
+    decide_p = lm_p[0] if near_ma else lr[dec]
+    decide_by = (f"ARCH-LM({arch_lags[0]})" if near_ma else "LR within the engine (t)" if dec == "t"
+                 else "kurtosis-scaled Gaussian LR within the engine")
     boot_rule = False
     if bootstrap_lr:
         boot_rule = True
@@ -392,6 +413,11 @@ def compare(endog, exog=None, order=(1, 0, 0), trend="c", dists=("normal", "t"),
                                                      note="valid at the boundary (Cavaliere, Nielsen & Rahbek 2017)")]
                                                    ).set_index("test")])
     arch_signal = decide_p <= alpha if boot_rule else decide_p < alpha   # Monte Carlo p-values: reject when p <= alpha
+    if np.isfinite(kurt_z) and kurt_z > 4:
+        flags.append(_flag("L16", "info", f"fat-tailed shocks (kurtosis {kurt_z:.2f} of the GARCH std. residuals): the "
+                           f"Gaussian LR for GARCH is inflated about {(kurt_z - 1) / 2:.2f}-fold and would over-reject "
+                           "(E13)", f"the GARCH decision uses the {decide_by}, which stays valid under fat tails "
+                           "(done here)"))
     caveats = []
     if nobs < 100:
         model, reason = "SARIMAX", f"{nobs} observations are too few for GARCH (L3)"

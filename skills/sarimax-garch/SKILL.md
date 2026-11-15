@@ -92,9 +92,12 @@ stat, p = arch_lm_test(res0.resid.iloc[res0.loglikelihood_burn:], lags=12)   # A
 - Monthly data: a GARCH variance forecast beats the sample variance from about 12–15 years with a typical ARCH
   effect (α ≈ .10), ~20 years if weak (α ≈ .05), under 10 if strong (α ≈ .15) or highly persistent (α+β ≈ .98).
 - **`compare()` does this step in one call** and never compares across backends. It returns a recommendation
-  with limitation codes L1–L15 and fallbacks (workflow and evidence: `sarimax_garch/GUIDE.md`).
+  with limitation codes L1–L17 and fallbacks (workflow and evidence: `sarimax_garch/GUIDE.md`).
   - It runs ARCH-LM, then decides with the LR test of GARCH vs α = β = 0 inside the engine. It uses ARCH-LM
     instead when an MA root is near 1.
+  - The deciding LR is the **t** LR (or, with `dists=("normal",)`, the Gaussian LR divided by max(1, (κ − 1)/2)).
+    The plain Gaussian LR is not robust to fat tails: on homoskedastic t(5) data it picks GARCH 14–19% of the
+    time (L16, E13). Do the same in a hand-rolled test: fit both models with `dist="t"`.
   - In short samples, pass `bootstrap_lr=199`, or call `garch_test(...)`, for the restricted-bootstrap
     p-value. It is correctly sized at the α = 0 boundary, where χ²(2) is conservative, and has 10–11 points more
     power at T = 120.

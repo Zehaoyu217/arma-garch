@@ -82,11 +82,14 @@ import numpy as np
 from scipy import optimize, signal, stats
 from scipy.special import gammaln
 
-__version__ = "3.2"
+__version__ = "3.2.1"
 
 _PERSIST_CAP = 0.9999      # alpha + beta < cap (covariance stationarity, with margin)
 _NU_MAX = 200.0            # upper bound for nu: t(200) is normal to 3 decimals; beyond it the
                            # likelihood is flat and an unbounded simplex wanders off to 1e6
+_NU_MIN = 2.05             # lower bound for nu, for the optimiser AND the objective: towards nu = 2 the unit-
+                           # variance t degenerates (scale fixed, variance -> inf), and a simplex polish that
+                           # slid below the L-BFGS-B bound left the finite-difference steps undefined (nu < 2)
 
 
 # -----------------------------------------------------------------------------
@@ -169,7 +172,7 @@ def _neg_loglik(theta, y, X, p, q, dist, init="backcast", xreg="regression"):
     _, _, _, _, omega, alpha, beta, nu = _unpack(theta, p, q, k, dist)
     if omega <= 0 or alpha < 0 or beta < 0 or alpha + beta >= _PERSIST_CAP:
         return 1e10
-    if dist == "t" and not (2.0 < nu <= _NU_MAX):
+    if dist == "t" and not (_NU_MIN <= nu <= _NU_MAX):
         return 1e10
     return _neg_loglik_raw(theta, y, X, p, q, dist, init, xreg)
 
@@ -306,16 +309,30 @@ def _sandwich_cov(theta, y, X, p, q, dist, init="backcast", xreg="regression", f
     OPG = S.T @ S
     # raw loglik: a step across the alpha+beta cap must see the likelihood, not the 1e10 wall
     H = _num_hessian(lambda t: _neg_loglik_raw(t, y, X, p, q, dist, init, xreg), theta, typ=typ, free=free)
-    try:
-        Hinv = np.linalg.inv(H)
-    except np.linalg.LinAlgError:
-        Hinv = np.linalg.pinv(H)
+
+    def inverse(A, generalised=False):
+        # a non-finite Hessian / OPG (e.g. a finite-difference step leaving the admissible region at a boundary
+        # optimum) has no inverse: return NaN, so the SEs are NaN, instead of raising from the SVD
+        if not np.all(np.isfinite(A)):
+            return np.full(A.shape, np.nan)
+        try:
+            return np.linalg.pinv(A) if generalised else np.linalg.inv(A)
+        except np.linalg.LinAlgError:
+            try:
+                return np.linalg.pinv(A)
+            except np.linalg.LinAlgError:
+                return np.full(A.shape, np.nan)
+
+    Hinv = inverse(H)
+    if not np.all(np.isfinite(Hinv)) or not np.all(np.isfinite(OPG)):
+        warnings.warn("the covariance matrix could not be computed (non-finite Hessian or scores at the "
+                      "estimate, typically a boundary optimum): standard errors are NaN; use bootstrap().")
 
     def embed(V):
         out = np.full((k, k), np.nan)
         out[np.ix_(free, free)] = V
         return out
-    return embed(Hinv @ OPG @ Hinv), embed(Hinv), embed(np.linalg.pinv(OPG))
+    return embed(Hinv @ OPG @ Hinv), embed(Hinv), embed(inverse(OPG, generalised=True))
 
 
 # -----------------------------------------------------------------------------
@@ -474,6 +491,10 @@ class JointResult:
     def nu_at_bound(self):
         return bool(self.dist == "t" and "nu" not in self.fixed and self["nu"] > _NU_MAX - 1.0)
 
+    @property
+    def nu_at_lower_bound(self):
+        return bool(self.dist == "t" and "nu" not in self.fixed and self["nu"] < _NU_MIN + 0.01)
+
     def summary(self):
         se = self.se
         z = self.params / se
@@ -518,6 +539,9 @@ class JointResult:
         if self.nu_at_bound:
             lines.append("  WARNING: nu at its upper bound -> no fat tails in the data; dist='normal' "
                          "is the same model with one parameter less.")
+        if self.nu_at_lower_bound:
+            lines.append(f"  WARNING: nu at its lower bound ({_NU_MIN}) -> the t fit is degenerate (variance "
+                         "-> infinity): check for outliers or breaks; dist='normal' for the mean.")
         return "\n".join(lines)
 
 
@@ -631,7 +655,7 @@ def fit_joint(y, X=None, p=1, q=1, d=0, dist="t", start=None, polish=True, compu
 
     bounds_all = ([(None, None)] * (1 + p + q + k)
                   + [(1e-10, None), (0.0, 1.0), (0.0, 1.0)]
-                  + ([(2.05, _NU_MAX)] if dist == "t" else []))
+                  + ([(_NU_MIN, _NU_MAX)] if dist == "t" else []))
     bounds = [bounds_all[i] for i in free]
     obj = lambda v: _neg_loglik(full(v), y, X, p, q, dist, init, xreg)
     ia = 1 + p + q + k + 1
